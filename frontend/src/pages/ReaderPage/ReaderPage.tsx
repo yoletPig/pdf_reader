@@ -73,6 +73,14 @@ const TAB_LABELS: Record<ReaderTab, string> = {
   profile: '论文画像',
 }
 
+function createQaSessionId(scope: string) {
+  return `qa:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+function getQaSessionKey(scope: string) {
+  return `pdf-reader:${scope}:qa-session`
+}
+
 function replaceLigatures(text: string) {
   return text.replace(/[ﬀﬁﬂﬃﬄ]/g, (char) => LIGATURE_MAP[char] || char)
 }
@@ -197,6 +205,7 @@ export default function ReaderPage() {
   const [pageReadMessages, setPageReadMessages] = useState<Record<number, string>>({})
   const [qaMessages, setQaMessages] = useState<QaMessage[]>([])
   const [qaInput, setQaInput] = useState('')
+  const [qaSessionId, setQaSessionId] = useState('')
 
   const pendingPageKeysRef = useRef(new Set<string>())
   const pendingTranslationTasksRef = useRef(new Map<string, Promise<PageDocument | undefined>>())
@@ -230,6 +239,7 @@ export default function ReaderPage() {
     setPageReadMessages({})
     setQaMessages([])
     setQaInput('')
+    setQaSessionId('')
     setActiveTab('full')
     setIsAutoFullTranslateEnabled(false)
     setIsAutoTranslating(false)
@@ -245,7 +255,11 @@ export default function ReaderPage() {
       .then((res) => {
         const loadedPaper = res.data
         const profile = (loadedPaper.reader_profile || {}) as ReaderProfile
+        const sessionKey = getQaSessionKey(`paper:${id}`)
+        const storedSessionId = window.sessionStorage.getItem(sessionKey) || createQaSessionId(`paper:${id}`)
+        window.sessionStorage.setItem(sessionKey, storedSessionId)
         setPaper(loadedPaper)
+        setQaSessionId(storedSessionId)
         setIsAutoFullTranslateEnabled(Boolean(profile.auto_full_translation_enabled))
         setAutoTranslateProgress({
           completed: profile.translated_pages || 0,
@@ -696,7 +710,7 @@ export default function ReaderPage() {
   }, [id, currentPage, currentMode, currentPageDocument?.markdown])
 
   const submitQa = async (question: string, displayText?: string) => {
-    if (!id || !question.trim() || isQaLoading) return
+    if (!id || !question.trim() || isQaLoading || !qaSessionId) return
 
     setActiveTab('qa')
     setQaMessages((prev) => [
@@ -719,6 +733,7 @@ export default function ReaderPage() {
         },
         context: {
           paper_id: id,
+          session_id: qaSessionId,
           selected_text: selectedText || undefined,
         },
       })
@@ -1079,7 +1094,21 @@ export default function ReaderPage() {
                 <div className={styles.panelHeader}>
                   <div>
                     <strong>Paper QA</strong>
-                    <span className={styles.panelHint}>默认结合论文画像、摘要和整篇检索结果回答；选中文本只是附加线索。</span>
+                    <span className={styles.panelHint}>支持多轮追问。默认结合论文画像、摘要、历史对话和整篇检索结果回答。</span>
+                  </div>
+                  <div className={styles.panelActions}>
+                    <button
+                      className={styles.secondaryAction}
+                      onClick={() => {
+                        if (!id) return
+                        const nextSessionId = createQaSessionId(`paper:${id}`)
+                        window.sessionStorage.setItem(getQaSessionKey(`paper:${id}`), nextSessionId)
+                        setQaSessionId(nextSessionId)
+                        setQaMessages([])
+                      }}
+                    >
+                      重置对话
+                    </button>
                   </div>
                 </div>
 

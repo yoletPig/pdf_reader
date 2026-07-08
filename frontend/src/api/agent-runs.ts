@@ -8,6 +8,7 @@ export interface CreatePaperQARunRequest {
   }
   context?: {
     paper_id?: string
+    session_id?: string
     current_page?: number
     selected_text?: string
   }

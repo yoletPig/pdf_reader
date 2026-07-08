@@ -14,6 +14,7 @@ class PaperQAAgent(BaseHarnessAgent):
         question = (agent_input.get("question") or "").strip()
         if not question:
             raise ValueError("question is required")
+        conversation_history = ctx.metadata.get("conversation_history", [])[-6:]
 
         paper_profile_context = ""
         if ctx.paper_id:
@@ -49,6 +50,13 @@ class PaperQAAgent(BaseHarnessAgent):
         selection_hint = ""
         if ctx.selected_text:
             selection_hint = f"\n\n补充线索（来自用户选中的片段，仅供参考，不代表答案范围限制）：\n{ctx.selected_text}"
+        history_hint = ""
+        if conversation_history:
+            rendered_history = []
+            for turn in conversation_history:
+                role = "用户" if turn.get("role") == "user" else "助手"
+                rendered_history.append(f"{role}: {turn.get('content', '')}")
+            history_hint = "\n\n历史对话（用于追问理解）:\n" + "\n\n".join(rendered_history)
 
         await runtime.emit("llm_started", {"model": runtime.default_model_name})
         response = await runtime.llm_router.chat(
@@ -60,12 +68,13 @@ class PaperQAAgent(BaseHarnessAgent):
                             "你是一个论文问答助手。只能基于给定上下文回答。"
                             "如果上下文不足，明确说明信息不足。"
                             "回答使用中文，先给结论，再给简要依据。"
+                            "如果当前问题是追问，必须结合历史对话解析代词、省略和上下文承接。"
                         ),
                     ),
                     LLMMessage(
                         role="user",
                         content=(
-                            f"问题：{question}{selection_hint}\n\n"
+                            f"问题：{question}{selection_hint}{history_hint}\n\n"
                             f"论文全局信息：\n{paper_profile_context or '暂无全局信息'}\n\n"
                             f"检索上下文：\n{rag_context or '无可用上下文'}"
                         ),

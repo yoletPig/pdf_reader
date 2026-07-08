@@ -4,18 +4,35 @@ import { agentRunsApi } from '../../api/agent-runs'
 import { papersApi, Paper } from '../../api/papers'
 import styles from './ChatPage.module.css'
 
+function createQaSessionId(scope: string) {
+  return `qa:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+function getQaSessionKey(scope: string) {
+  return `pdf-reader:${scope}:qa-session`
+}
+
 export default function ChatPage() {
   const [input, setInput] = useState('')
   const [papers, setPapers] = useState<Paper[]>([])
   const [selectedPaperId, setSelectedPaperId] = useState('')
-  const { messages, isStreaming, addMessage, setStreaming } = useChatStore()
+  const [qaSessionId, setQaSessionId] = useState('')
+  const { messages, isStreaming, addMessage, setStreaming, clearMessages } = useChatStore()
 
   useEffect(() => {
     papersApi.list().then(res => setPapers(res.data.papers || [])).catch(console.error)
   }, [])
 
+  useEffect(() => {
+    const scope = selectedPaperId || 'all-papers'
+    const sessionKey = getQaSessionKey(scope)
+    const storedSessionId = window.sessionStorage.getItem(sessionKey) || createQaSessionId(scope)
+    window.sessionStorage.setItem(sessionKey, storedSessionId)
+    setQaSessionId(storedSessionId)
+  }, [selectedPaperId])
+
   const handleSend = async () => {
-    if (!input.trim() || isStreaming) return
+    if (!input.trim() || isStreaming || !qaSessionId) return
     const userMsg = { id: Date.now().toString(), role: 'user' as const, content: input, timestamp: Date.now() }
     addMessage(userMsg)
     setInput('')
@@ -30,6 +47,7 @@ export default function ChatPage() {
         },
         context: {
           paper_id: selectedPaperId || undefined,
+          session_id: qaSessionId,
         },
       })
       const data = res.data as any
@@ -99,7 +117,10 @@ export default function ChatPage() {
         <select
           className={styles.scopeSelect}
           value={selectedPaperId}
-          onChange={e => setSelectedPaperId(e.target.value)}
+          onChange={e => {
+            setSelectedPaperId(e.target.value)
+            clearMessages()
+          }}
           disabled={isStreaming}
         >
           <option value="">全部论文</option>
@@ -118,6 +139,19 @@ export default function ChatPage() {
           className={styles.input}
           disabled={isStreaming}
         />
+        <button
+          onClick={() => {
+            const scope = selectedPaperId || 'all-papers'
+            const nextSessionId = createQaSessionId(scope)
+            window.sessionStorage.setItem(getQaSessionKey(scope), nextSessionId)
+            setQaSessionId(nextSessionId)
+            clearMessages()
+          }}
+          disabled={isStreaming}
+          className="btn"
+        >
+          重置
+        </button>
         <button onClick={handleSend} disabled={isStreaming} className="btn btn-primary">
           {isStreaming ? '思考中...' : '发送'}
         </button>

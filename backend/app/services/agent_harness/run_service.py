@@ -16,6 +16,49 @@ from app.services.llm import llm_router
 
 
 class AgentRunService:
+    async def _load_conversation_history(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: str,
+        paper_id: str,
+        current_run_id: str,
+        limit: int = 6,
+    ) -> list[dict]:
+        stmt = (
+            select(AgentRun)
+            .where(
+                AgentRun.session_id == session_id,
+                AgentRun.id != current_run_id,
+            )
+            .order_by(AgentRun.created_at.desc())
+            .limit(limit)
+        )
+        if paper_id:
+            stmt = stmt.where(AgentRun.paper_id == paper_id)
+
+        rows = (await db.execute(stmt)).scalars().all()
+        history: list[dict] = []
+
+        for row in reversed(rows):
+            try:
+                agent_input = json.loads(row.input_json or "{}")
+            except Exception:
+                agent_input = {}
+            try:
+                output = json.loads(row.output_json or "{}")
+            except Exception:
+                output = {}
+
+            question = (agent_input.get("question") or "").strip()
+            answer = (output.get("content") or "").strip()
+            if question:
+                history.append({"role": "user", "content": question})
+            if answer:
+                history.append({"role": "assistant", "content": answer})
+
+        return history
+
     async def create_run(
         self,
         db: AsyncSession,
@@ -60,7 +103,15 @@ class AgentRunService:
                 paper_id=run.paper_id or None,
                 current_page=context_data.get("current_page"),
                 selected_text=context_data.get("selected_text"),
-                metadata=context_data,
+                metadata={
+                    **context_data,
+                    "conversation_history": await self._load_conversation_history(
+                        db,
+                        session_id=run.session_id,
+                        paper_id=run.paper_id,
+                        current_run_id=run.id,
+                    ),
+                },
             )
             result = await runtime.run(agent_name, agent_input, ctx)
 
