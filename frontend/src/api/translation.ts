@@ -19,6 +19,16 @@ export interface TranslateResponse {
   tokens_used?: number
 }
 
+export interface TranslateCacheEntry {
+  paper_id: string
+  block_id: string
+  original_text: string
+  translated_text: string
+  mode: string
+  model_used?: string
+  created_at?: string | null
+}
+
 export interface TranslatePageRequest {
   paper_id: string
   page_number: number
@@ -46,6 +56,10 @@ export const translationApi = {
     apiClient.post<TranslateResponse>('/translate', data),
   getCache: (paperId: string) =>
     apiClient.get(`/translate/cache/${paperId}`),
+  getCacheEntry: (paperId: string, blockId: string, mode: 'quick' | 'polish') =>
+    apiClient.get<{ paper_id: string; entry: TranslateCacheEntry | null }>(`/translate/cache/${paperId}/entry`, {
+      params: { block_id: blockId, mode },
+    }),
   translatePage: (data: TranslatePageRequest) =>
     apiClient.post<TranslatePageResponse>('/translate/page', data),
 }

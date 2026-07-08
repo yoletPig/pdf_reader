@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/translate", tags=["翻译"])
 
 
+def _serialize_cache_row(row: TranslationCache | None) -> dict | None:
+    if not row:
+        return None
+    return {
+        "paper_id": row.paper_id,
+        "block_id": row.block_id,
+        "original_text": row.original_text,
+        "translated_text": row.translated_text,
+        "mode": row.mode,
+        "model_used": row.model_used,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 async def _load_page_blocks(paper_id: str, page_number: int) -> list[dict]:
     """优先从内存缓存取页面块，缓存没有时回退到数据库。"""
     blocks = pdf_service.get_blocks(paper_id, page_number=page_number)
@@ -136,6 +150,26 @@ async def get_translation_cache(paper_id: str):
     """获取翻译缓存"""
     cached = translation_service.get_cached_for_paper(paper_id)
     return {"paper_id": paper_id, "cache": cached}
+
+
+@router.get("/cache/{paper_id}/entry")
+async def get_translation_cache_entry(
+    paper_id: str,
+    block_id: str,
+    mode: str = "quick",
+    db: AsyncSession = Depends(get_db),
+):
+    """获取单条持久化翻译缓存。"""
+    row = (
+        await db.execute(
+            select(TranslationCache).where(
+                TranslationCache.paper_id == paper_id,
+                TranslationCache.block_id == block_id,
+                TranslationCache.mode == mode,
+            )
+        )
+    ).scalar_one_or_none()
+    return {"paper_id": paper_id, "entry": _serialize_cache_row(row)}
 
 
 @router.post("/page")

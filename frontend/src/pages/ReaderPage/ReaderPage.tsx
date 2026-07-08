@@ -471,12 +471,53 @@ export default function ReaderPage() {
     }
   }
 
+  const loadPersistedPageDocument = async (pageNumber: number, mode: ReaderMode) => {
+    if (!id) return undefined
+
+    const key = `${id}:${pageNumber}:${mode}`
+    if (pageDocumentsRef.current[key]) {
+      return pageDocumentsRef.current[key]
+    }
+
+    try {
+      const res = await translationApi.getCacheEntry(id, `page-${pageNumber}-${mode}`, mode)
+      const entry = res.data.entry
+      if (!entry?.translated_text?.trim()) {
+        return undefined
+      }
+
+      const restoredDocument = {
+        markdown: entry.translated_text,
+        sourceText: entry.original_text || pageTextsRef.current[pageNumber] || '',
+        modelUsed: entry.model_used,
+      }
+      setPageDocuments((prev) => ({
+        ...prev,
+        [key]: restoredDocument,
+      }))
+      if (entry.original_text?.trim()) {
+        setPageTexts((prev) => (prev[pageNumber] ? prev : { ...prev, [pageNumber]: entry.original_text }))
+      }
+      return restoredDocument
+    } catch (cacheError) {
+      console.error(`读取第 ${pageNumber} 页持久化译文失败:`, cacheError)
+      return undefined
+    }
+  }
+
   const translatePageDocument = async (pageNumber: number, mode: ReaderMode, force = false) => {
     if (!id) return undefined
 
     const key = `${id}:${pageNumber}:${mode}`
     if (!force && pageDocumentsRef.current[key]) {
       return pageDocumentsRef.current[key]
+    }
+
+    if (!force) {
+      const restored = await loadPersistedPageDocument(pageNumber, mode)
+      if (restored) {
+        return restored
+      }
     }
 
     const existingTask = pendingTranslationTasksRef.current.get(key)
@@ -646,6 +687,13 @@ export default function ReaderPage() {
       }
     }
   }, [isAutoFullTranslateEnabled, id, pdfDoc, numPages, currentMode, hasCompletedCurrentProfile])
+
+  useEffect(() => {
+    if (!id || !currentPage || currentPageDocument?.markdown) {
+      return
+    }
+    void loadPersistedPageDocument(currentPage, currentMode)
+  }, [id, currentPage, currentMode, currentPageDocument?.markdown])
 
   const submitQa = async (question: string, displayText?: string) => {
     if (!id || !question.trim() || isQaLoading) return
