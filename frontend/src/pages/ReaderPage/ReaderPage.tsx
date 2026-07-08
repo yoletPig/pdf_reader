@@ -20,7 +20,7 @@ import 'katex/dist/katex.min.css'
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
 type ReaderMode = 'quick' | 'polish'
-type ReaderTab = 'full' | 'selection' | 'qa' | 'source'
+type ReaderTab = 'profile' | 'selection' | 'qa' | 'full'
 type ReadStatus = 'idle' | 'reading' | 'ready' | 'empty' | 'error'
 
 type PageDocument = {
@@ -70,7 +70,7 @@ const TAB_LABELS: Record<ReaderTab, string> = {
   full: '全文翻译',
   selection: '选词翻译',
   qa: 'Paper QA',
-  source: '提取原文',
+  profile: '论文画像',
 }
 
 function replaceLigatures(text: string) {
@@ -285,6 +285,12 @@ export default function ReaderPage() {
   const currentSelectionTranslation = selectionCacheKey ? (cache[selectionCacheKey]?.[currentMode] ?? '') : ''
   const pdfUrl = id ? papersApi.getFileUrl(id) : ''
   const readerProfile = (paper?.reader_profile || {}) as ReaderProfile
+  const autoTranslateTotal = numPages || paper?.page_count || readerProfile.total_pages || 0
+  const hasCompletedCurrentProfile =
+    Boolean(paper?.ai_summary_md) &&
+    readerProfile.summary_translation_mode === currentMode &&
+    readerProfile.auto_full_translation_status === 'completed' &&
+    (readerProfile.translated_pages || 0) >= autoTranslateTotal
 
   useEffect(() => {
     setShowFullSource(!currentPageDocument?.markdown)
@@ -574,7 +580,7 @@ export default function ReaderPage() {
   }
 
   useEffect(() => {
-    if (!isAutoFullTranslateEnabled || !id || !pdfDoc || numPages <= 0) {
+    if (!isAutoFullTranslateEnabled || !id || !pdfDoc || numPages <= 0 || hasCompletedCurrentProfile) {
       return
     }
 
@@ -639,7 +645,7 @@ export default function ReaderPage() {
         setIsAutoTranslating(false)
       }
     }
-  }, [isAutoFullTranslateEnabled, id, pdfDoc, numPages, currentMode])
+  }, [isAutoFullTranslateEnabled, id, pdfDoc, numPages, currentMode, hasCompletedCurrentProfile])
 
   const submitQa = async (question: string, displayText?: string) => {
     if (!id || !question.trim() || isQaLoading) return
@@ -869,7 +875,7 @@ export default function ReaderPage() {
                 <div className={styles.panelHeader}>
                   <div>
                     <strong>当前页全文翻译</strong>
-                    <span className={styles.panelHint}>手动打开后台全文翻译后，会顺序翻译整篇论文并生成论文画像。</span>
+                    <span className={styles.panelHint}>手动打开后台全文翻译后，会顺序翻译整篇论文并生成论文画像；已完成的画像不会在重新进入页面时重复刷新。</span>
                   </div>
                   <div className={styles.panelActions}>
                     <button
@@ -908,9 +914,9 @@ export default function ReaderPage() {
                   <div className={styles.card}>
                     <div className={styles.cardTitle}>后台全文翻译进度</div>
                     <div className={styles.metaRow}>
-                      <span>{isAutoTranslating ? '运行中' : '已停止'}</span>
+                      <span>{isAutoTranslating ? '运行中' : hasCompletedCurrentProfile ? '已完成' : '已停止'}</span>
                       <span>
-                        {autoTranslateProgress.completed}/{autoTranslateProgress.total || numPages || 0} 页
+                        {autoTranslateProgress.completed}/{autoTranslateProgress.total || autoTranslateTotal || 0} 页
                       </span>
                       <span>模式 {currentMode}</span>
                       {readerProfile.last_summary_refresh_at ? <span>画像已刷新</span> : null}
@@ -921,22 +927,6 @@ export default function ReaderPage() {
                       </p>
                     ) : (
                       <p className={styles.placeholderText}>当前没有失败页。</p>
-                    )}
-                  </div>
-                ) : null}
-
-                {paper?.ai_summary_md ? (
-                  <div className={styles.card}>
-                    <div className={styles.cardTitle}>论文画像 / AI 总结</div>
-                    {isRefreshingSummary ? (
-                      <div className={styles.inlineLoading}>
-                        <div className={styles.spinner} />
-                        <p>正在刷新论文画像...</p>
-                      </div>
-                    ) : (
-                      <div className={styles.markdownWrap}>
-                        <MarkdownBlock content={paper.ai_summary_md} />
-                      </div>
                     )}
                   </div>
                 ) : null}
@@ -1041,7 +1031,7 @@ export default function ReaderPage() {
                 <div className={styles.panelHeader}>
                   <div>
                     <strong>Paper QA</strong>
-                    <span className={styles.panelHint}>默认检索整篇论文；如果有选中文本，会作为附加线索而不是页内限制。</span>
+                    <span className={styles.panelHint}>默认结合论文画像、摘要和整篇检索结果回答；选中文本只是附加线索。</span>
                   </div>
                 </div>
 
@@ -1103,40 +1093,86 @@ export default function ReaderPage() {
               </div>
             )}
 
-            {activeTab === 'source' && (
+            {activeTab === 'profile' && (
               <div className={styles.tabPanel}>
                 <div className={styles.panelHeader}>
                   <div>
-                    <strong>提取原文调试</strong>
-                    <span className={styles.panelHint}>用于判断 PDF 本身是否包含可提取文本，以及提取顺序是否混乱。</span>
+                    <strong>论文画像</strong>
+                    <span className={styles.panelHint}>沉淀标题、摘要、PDF 元数据和基于全文译文生成的论文总结。</span>
                   </div>
                   <div className={styles.panelActions}>
+                    <button
+                      className={styles.secondaryAction}
+                      onClick={() => id && void refreshReaderProfile(currentMode, {
+                        auto_full_translation_enabled: isAutoFullTranslateEnabled,
+                        auto_full_translation_mode: currentMode,
+                        auto_full_translation_status: isAutoTranslating ? 'running' : readerProfile.auto_full_translation_status || 'idle',
+                        translated_pages: autoTranslateProgress.completed,
+                        total_pages: autoTranslateTotal,
+                        failed_pages: autoTranslateProgress.failedPages,
+                      })}
+                      disabled={isRefreshingSummary || autoTranslateProgress.completed === 0}
+                    >
+                      {isRefreshingSummary ? '刷新中...' : '刷新论文画像'}
+                    </button>
                     <button className={styles.secondaryAction} onClick={() => setIsDebugOpen((value) => !value)}>
-                      {isDebugOpen ? '隐藏详情' : '展开详情'}
+                      {isDebugOpen ? '隐藏调试' : '显示调试'}
                     </button>
                   </div>
                 </div>
 
                 <div className={styles.metaRow}>
-                  <span>page {currentPage}</span>
-                  <span>{statusLabel}</span>
-                  <span>{currentPageText.length} chars</span>
+                  <span>{paper?.title || '未命名论文'}</span>
+                  <span>{autoTranslateTotal} 页</span>
+                  <span>{readerProfile.summary_translation_mode || currentMode}</span>
                 </div>
 
-                {currentReadMessage ? <div className={styles.notice}>{currentReadMessage}</div> : null}
+                <div className={styles.card}>
+                  <div className={styles.cardTitle}>基础元数据</div>
+                  <div className={styles.markdownWrap}>
+                    <p><strong>标题</strong>: {paper?.title || '暂无'}</p>
+                    <p><strong>摘要</strong>: {paper?.abstract || '暂无'}</p>
+                    <p><strong>页数</strong>: {paper?.page_count || autoTranslateTotal || 0}</p>
+                  </div>
+                </div>
+
+                {paper?.pdf_metadata && Object.keys(paper.pdf_metadata).length ? (
+                  <div className={styles.card}>
+                    <div className={styles.cardTitle}>PDF 元数据</div>
+                    <div className={styles.metaGrid}>
+                      {Object.entries(paper.pdf_metadata).map(([key, value]) => (
+                        <div key={key} className={styles.metaItem}>
+                          <strong>{key}</strong>
+                          <span>{String(value)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className={styles.card}>
-                  <div className={styles.cardTitle}>当前页原始提取文本</div>
-                  <pre className={styles.sourceText}>{currentPageText || '[EMPTY PAGE TEXT]'}</pre>
+                  <div className={styles.cardTitle}>AI 论文画像</div>
+                  {isRefreshingSummary ? (
+                    <div className={styles.inlineLoading}>
+                      <div className={styles.spinner} />
+                      <p>正在刷新论文画像...</p>
+                    </div>
+                  ) : paper?.ai_summary_md ? (
+                    <div className={styles.markdownWrap}>
+                      <MarkdownBlock content={paper.ai_summary_md} />
+                    </div>
+                  ) : (
+                    <p className={styles.placeholderText}>开启并完成后台全文翻译后，这里会生成整篇论文的画像与摘要。</p>
+                  )}
                 </div>
 
                 {isDebugOpen ? (
                   <div className={styles.card}>
-                    <div className={styles.cardTitle}>调试建议</div>
+                    <div className={styles.cardTitle}>提取调试</div>
                     <ul className={styles.debugList}>
-                      <li>如果这里为空，多半是扫描页或图片页，无法直接从 PDF 文本层获取内容。</li>
-                      <li>如果这里有文本但顺序混乱，问题在 `pdf.js` 文本提取顺序，需要做后处理。</li>
-                      <li>如果公式乱码明显，优先在提示词中约束输出格式，再根据乱码模式做清洗。</li>
+                      <li>如果全文翻译失败页较多，优先检查 PDF 是否为扫描页或图片页。</li>
+                      <li>如果 QA 回答偏窄，先刷新论文画像，再重新提问整篇总结类问题。</li>
+                      <li>如果公式乱码明显，问题通常在 PDF 提取文本而不是 Markdown 渲染。</li>
                     </ul>
                   </div>
                 ) : null}

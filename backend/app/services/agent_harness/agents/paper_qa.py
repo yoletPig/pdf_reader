@@ -1,7 +1,10 @@
 """paper_qa Agent"""
+from sqlalchemy import select
+
 from app.services.agent_harness.agents.base import BaseHarnessAgent
 from app.services.agent_harness.context import RunContext
 from app.services.llm import LLMMessage, LLMRequest
+from app.models.paper import Paper
 
 
 class PaperQAAgent(BaseHarnessAgent):
@@ -12,9 +15,21 @@ class PaperQAAgent(BaseHarnessAgent):
         if not question:
             raise ValueError("question is required")
 
+        paper_profile_context = ""
+        if ctx.paper_id:
+            paper = (
+                await runtime.registry.db.execute(select(Paper).where(Paper.id == ctx.paper_id))
+            ).scalar_one_or_none()
+            if paper:
+                paper_profile_context = (
+                    f"论文标题：{paper.title or '未知标题'}\n"
+                    f"论文摘要：{paper.abstract or '暂无摘要'}\n\n"
+                    f"论文画像 / 全文总结：\n{paper.ai_summary_md or '暂无论文画像'}"
+                )
+
         await runtime.emit("tool_started", {"tool": "rag.retrieve"})
         retrieval = await runtime.registry.get_tool("rag.retrieve").run(
-            {"question": question, "paper_id": ctx.paper_id, "top_k": agent_input.get("top_k", 5)},
+            {"question": question, "paper_id": ctx.paper_id, "top_k": agent_input.get("top_k", 8)},
             ctx,
         )
         await runtime.emit(
@@ -49,7 +64,11 @@ class PaperQAAgent(BaseHarnessAgent):
                     ),
                     LLMMessage(
                         role="user",
-                        content=f"问题：{question}{selection_hint}\n\n上下文：\n{rag_context or '无可用上下文'}",
+                        content=(
+                            f"问题：{question}{selection_hint}\n\n"
+                            f"论文全局信息：\n{paper_profile_context or '暂无全局信息'}\n\n"
+                            f"检索上下文：\n{rag_context or '无可用上下文'}"
+                        ),
                     ),
                 ],
                 max_tokens=1200,

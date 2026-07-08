@@ -6,6 +6,7 @@ from app.services.agent_harness.tools.rag_tools import RetrieveChunksTool
 
 class HarnessRegistry:
     def __init__(self, db):
+        self.db = db
         self._agents = {
             "paper_qa": PaperQAAgent(),
         }

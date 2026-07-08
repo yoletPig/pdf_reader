@@ -22,7 +22,7 @@ class RetrieveChunksTool(BaseTool):
     async def run(self, tool_input: dict, ctx) -> dict:
         question = tool_input.get("question", "")
         paper_id = tool_input.get("paper_id") or ctx.paper_id
-        top_k = max(1, min(int(tool_input.get("top_k", 5)), 8))
+        top_k = max(1, min(int(tool_input.get("top_k", 8)), 12))
 
         stmt = select(PaperChunk, Paper.title)
         stmt = stmt.join(Paper, Paper.id == PaperChunk.paper_id)
