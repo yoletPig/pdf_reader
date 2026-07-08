@@ -1,0 +1,634 @@
+.container {
+  height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.10), transparent 26%),
+    linear-gradient(135deg, #f8fafc 0%, #eef6ff 48%, #f7f7f5 100%);
+}
+
+.workspace {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(380px, 1.1fr) minmax(420px, 0.9fr);
+  gap: 14px;
+  padding: 14px;
+}
+
+.pdfPane,
+.sidePane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 24px;
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.pdfPane {
+  position: relative;
+}
+
+.floatingChrome {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.backLink,
+.titleBadge,
+.controlCluster,
+.selectionDock,
+.tabBar,
+.tabPanel,
+.card,
+.qaBubble,
+.qaComposer {
+  backdrop-filter: blur(12px);
+}
+
+.backLink,
+.titleBadge,
+.controlCluster {
+  pointer-events: auto;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.titleBadge {
+  min-width: 0;
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.controlCluster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.controlGroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+}
+
+.controlBtn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+.controlBtn:hover:not(:disabled) {
+  background: rgba(239, 246, 255, 0.96);
+  color: var(--color-text);
+  transform: translateY(-1px);
+}
+
+.controlBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.controlInfo {
+  min-width: 58px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.pdfViewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 78px 26px 26px;
+  background:
+    linear-gradient(180deg, rgba(226, 232, 240, 0.68) 0%, rgba(241, 245, 249, 0.84) 100%);
+  display: flex;
+  justify-content: center;
+}
+
+.pdfPage {
+  background: white;
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.10),
+    0 2px 6px rgba(15, 23, 42, 0.04);
+  margin: 0 auto;
+}
+
+:global(.react-pdf__Page__textContent span.pdf-text-highlight) {
+  background: rgba(251, 191, 36, 0.35);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.22);
+}
+
+.selectionDock {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.84);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.22);
+}
+
+.dockBtn {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-size: 12px;
+}
+
+.dockBtn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.tabBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(248, 250, 252, 0.92);
+  flex-wrap: wrap;
+}
+
+.tabBtn {
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: rgba(255, 255, 255, 0.92);
+  transition: transform var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.tabBtn:hover {
+  transform: translateY(-1px);
+  color: var(--color-text);
+}
+
+.tabBtnActive {
+  background: linear-gradient(135deg, #0f766e 0%, #2563eb 100%);
+  border-color: transparent;
+  color: white;
+}
+
+.statusCluster {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.statusChip,
+.metaRow span {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.sideContent {
+  flex: 1;
+  min-height: 0;
+}
+
+.tabPanel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panelHeader strong {
+  display: block;
+  font-size: 15px;
+}
+
+.panelHint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.panelActions,
+.inlineActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modeChip,
+.secondaryAction {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.modeChipActive {
+  background: linear-gradient(135deg, #2563eb 0%, #0f766e 100%);
+  border-color: transparent;
+  color: white;
+}
+
+.primaryAction {
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: white;
+  font-size: 12px;
+}
+
+.primaryAction:disabled,
+.secondaryAction:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.card {
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.cardTitle {
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.notice {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(252, 165, 165, 0.6);
+  background: rgba(254, 242, 242, 0.96);
+  color: #991b1b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sourceText,
+.selectionScroll {
+  max-height: 280px;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.98);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text);
+}
+
+.selectionScroll {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.inlineLoading,
+.loadingState,
+.emptyState,
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.inlineLoading {
+  min-height: 120px;
+}
+
+.loadingState {
+  min-height: 280px;
+}
+
+.placeholderText {
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+}
+
+.markdownWrap,
+.qaBubble {
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.markdownWrap p,
+.qaBubble p {
+  margin-bottom: 12px;
+}
+
+.markdownWrap ul,
+.markdownWrap ol,
+.qaBubble ul,
+.qaBubble ol {
+  padding-left: 22px;
+  margin-bottom: 12px;
+}
+
+.markdownWrap li,
+.qaBubble li {
+  margin-bottom: 5px;
+}
+
+.markdownWrap code,
+.qaBubble code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(241, 245, 249, 0.95);
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+
+.markdownWrap pre,
+.qaBubble pre {
+  margin-bottom: 14px;
+}
+
+.markdownWrap pre code,
+.qaBubble pre code {
+  display: block;
+  overflow-x: auto;
+  padding: 12px 14px;
+}
+
+.markdownWrap blockquote,
+.qaBubble blockquote {
+  margin-bottom: 12px;
+  padding-left: 14px;
+  border-left: 3px solid rgba(37, 99, 235, 0.45);
+  color: var(--color-text-secondary);
+}
+
+.markdownWrap h1,
+.markdownWrap h2,
+.markdownWrap h3,
+.qaBubble h1,
+.qaBubble h2,
+.qaBubble h3 {
+  margin: 16px 0 10px;
+  line-height: 1.35;
+}
+
+.markdownWrap table,
+.qaBubble table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.markdownWrap th,
+.markdownWrap td,
+.qaBubble th,
+.qaBubble td {
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+:global(.katex) {
+  font-size: 1.02em;
+}
+
+.markdownWrap :global(.katex-display),
+.qaBubble :global(.katex-display) {
+  margin: 0.9rem 0 1rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.35rem 0.25rem;
+}
+
+.markdownWrap :global(.katex-display > .katex),
+.qaBubble :global(.katex-display > .katex) {
+  min-width: fit-content;
+}
+
+.metaRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.qaMessages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qaMessage {
+  display: flex;
+}
+
+.user {
+  justify-content: flex-end;
+}
+
+.assistant {
+  justify-content: flex-start;
+}
+
+.qaBubble {
+  max-width: min(100%, 760px);
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+}
+
+.user .qaBubble {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: white;
+  border-color: transparent;
+}
+
+.user .qaBubble code {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.qaSources {
+  margin-top: 12px;
+  border-top: 1px solid rgba(226, 232, 240, 0.95);
+  padding-top: 12px;
+}
+
+.qaSources summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.qaSourceItem {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.96);
+  color: var(--color-text-secondary);
+}
+
+.qaSourceItem:hover {
+  background: rgba(239, 246, 255, 0.96);
+}
+
+.qaSourceItem p {
+  margin-top: 6px;
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+.qaComposer {
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.qaInput {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: white;
+  color: var(--color-text);
+  outline: none;
+}
+
+.qaInput:focus {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08);
+}
+
+.debugList {
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  line-height: 1.75;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(203, 213, 225, 0.95);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1200px) {
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .workspace {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .floatingChrome {
+    flex-wrap: wrap;
+  }
+
+  .controlCluster,
+  .titleBadge {
+    width: 100%;
+  }
+
+  .tabBar,
+  .panelHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .statusCluster {
+    margin-left: 0;
+  }
+
+  .selectionDock {
+    width: calc(100% - 24px);
+    justify-content: center;
+  }
+}

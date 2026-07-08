@@ -1,0 +1,259 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #f8fafc;
+  color: #1e293b;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 64px;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #e2e8f0;
+  z-index: 10;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.backLink {
+  text-decoration: none;
+  color: #64748b;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.backLink:hover {
+  color: #3b82f6;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #0f172a;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btnPrimary {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+
+.btnPrimary:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.zoomValue {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 48px;
+  text-align: center;
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.uploadArea {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  margin: 40px;
+  border: 2px dashed #cbd5e1;
+  border-radius: 16px;
+  background: white;
+  transition: all 0.3s;
+}
+
+.uploadArea:hover {
+  border-color: #3b82f6;
+  background: #f8fafc;
+}
+
+.uploadIcon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.uploadText {
+  font-size: 16px;
+  font-weight: 500;
+  color: #475569;
+  margin-bottom: 8px;
+}
+
+.uploadSubtext {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 20px;
+}
+
+.fileInput {
+  display: none;
+}
+
+.viewerContainer {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.pdfPane {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  background: #edf2f7;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.pdfWrapper {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
+  background: white;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 380px;
+  border-left: 1px solid #e2e8f0;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebarSection {
+  padding: 20px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.sidebarSection:last-child {
+  border-bottom: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  margin: 0 0 12px 0;
+  letter-spacing: 0.05em;
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.statCard {
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #f1f5f9;
+}
+
+.statLabel {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.statValue {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.selectedTextContainer {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1e3a8a;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.emptyText {
+  font-style: italic;
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 0;
+}
+
+.textExtractor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.extractedText {
+  flex: 1;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 16px;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  border: 1px solid #0f172a;
+}

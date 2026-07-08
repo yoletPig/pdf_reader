@@ -1,0 +1,8 @@
+.agents
+.claude
+.codex
+.vscode
+
+node_modules
+*.pyc
+dist
