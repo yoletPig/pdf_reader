@@ -5,7 +5,8 @@ export interface SearchParams {
   source?: string
   year_from?: number
   year_to?: number
-  max_results?: number
+  page?: number
+  page_size?: number
 }
 
 export interface SearchResult {
@@ -24,6 +25,8 @@ export interface SearchResponse {
   query: string
   results: SearchResult[]
   total: number
+  page: number
+  page_size: number
 }
 
 export const searchApi = {

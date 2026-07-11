@@ -60,6 +60,44 @@ def _published_year(value: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _sanitize_search_abstract(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    # Collapse common LaTeX link wrappers in arXiv abstracts.
+    value = re.sub(
+        r"\\href\{([^}]*)\}\{\\text\{([^}]*)\}\}",
+        lambda match: match.group(2).strip() or match.group(1).strip(),
+        value,
+    )
+    value = re.sub(
+        r"\\href\{([^}]*)\}\{([^}]*)\}",
+        lambda match: match.group(2).strip() or match.group(1).strip(),
+        value,
+    )
+    value = re.sub(r"\\text\{([^}]*)\}", lambda match: match.group(1).strip(), value)
+
+    # Remove lightweight inline math wrappers when they only wrap plain text / links.
+    value = re.sub(r"\$([^$]+)\$", lambda match: match.group(1).strip(), value)
+
+    replacements = {
+        r"\&": "&",
+        r"\%": "%",
+        r"\_": "_",
+        r"\#": "#",
+        r"\$": "$",
+        r"~": " ",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+
+    value = re.sub(r"\\[a-zA-Z]+\s*", " ", value)
+    value = re.sub(r"\{|\}", "", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 async def _fetch_text(url: str, params: Optional[dict] = None) -> str:
     try:
         client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
@@ -71,15 +109,21 @@ async def _fetch_text(url: str, params: Optional[dict] = None) -> str:
         return response.text
 
 
-def _parse_arxiv_feed(xml_text: str) -> list[dict]:
+def _parse_arxiv_feed(xml_text: str) -> tuple[list[dict], int]:
     root = ET.fromstring(xml_text)
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
+    }
     entries: list[dict] = []
+    total_results = int(root.findtext("opensearch:totalResults", default="0", namespaces=ns) or "0")
 
     for entry in root.findall("atom:entry", ns):
         entry_id = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
         title = re.sub(r"\s+", " ", entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
-        abstract = re.sub(r"\s+", " ", entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        abstract = _sanitize_search_abstract(
+            re.sub(r"\s+", " ", entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        )
         published = (entry.findtext("atom:published", default="", namespaces=ns) or "").strip()
         authors = [
             re.sub(r"\s+", " ", author.findtext("atom:name", default="", namespaces=ns) or "").strip()
@@ -108,16 +152,16 @@ def _parse_arxiv_feed(xml_text: str) -> list[dict]:
                 "pdf_url": pdf_url or (ARXIV_PDF_URL.format(paper_id=source_id) if source_id else ""),
             }
         )
-    return entries
+    return entries, total_results
 
 
-async def _search_arxiv(query: str, max_results: int) -> list[dict]:
+async def _search_arxiv(query: str, page: int, page_size: int) -> tuple[list[dict], int]:
     xml_text = await _fetch_text(
         ARXIV_API_URL,
         params={
             "search_query": f"all:{query}",
-            "start": 0,
-            "max_results": max(1, min(max_results, 20)),
+            "start": max(0, (page - 1) * page_size),
+            "max_results": max(1, min(page_size, 20)),
             "sortBy": "relevance",
             "sortOrder": "descending",
         },
@@ -134,7 +178,7 @@ async def _fetch_arxiv_entry(source_id: str) -> Optional[dict]:
             "max_results": 1,
         },
     )
-    entries = _parse_arxiv_feed(xml_text)
+    entries, _total = _parse_arxiv_feed(xml_text)
     return entries[0] if entries else None
 
 
@@ -179,7 +223,8 @@ async def search_papers(
     source: Optional[str] = None,
     year_from: Optional[int] = None,
     year_to: Optional[int] = None,
-    max_results: int = 20,
+    page: int = 1,
+    page_size: int = 10,
 ):
     """论文搜索。当前接入 arXiv。"""
     normalized_query = (query or "").strip()
@@ -189,9 +234,11 @@ async def search_papers(
     selected_source = (source or "arxiv").lower()
     if selected_source not in {"arxiv", "all"}:
         raise HTTPException(status_code=400, detail="当前仅支持 arXiv 搜索")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 20))
 
     try:
-        results = await _search_arxiv(normalized_query, max_results)
+        results, total = await _search_arxiv(normalized_query, page, page_size)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"arXiv 搜索失败: {str(exc)[:200]}") from exc
 
@@ -203,7 +250,9 @@ async def search_papers(
     return {
         "query": normalized_query,
         "results": results,
-        "total": len(results),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 

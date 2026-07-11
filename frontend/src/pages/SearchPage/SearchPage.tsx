@@ -5,26 +5,37 @@ import { useSearchStore } from '../../stores/search-store'
 import styles from './SearchPage.module.css'
 
 export default function SearchPage() {
+  const PAGE_SIZE = 10
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [paperUrl, setPaperUrl] = useState('')
   const [error, setError] = useState('')
   const [importingKey, setImportingKey] = useState('')
   const [isImportingUrl, setIsImportingUrl] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [total, setTotal] = useState(0)
   const { results, isSearching, setResults, setSearching } = useSearchStore()
 
-  const handleSearch = async () => {
+  const handleSearch = async (page = 1) => {
     const normalizedQuery = query.trim()
     if (!normalizedQuery) return
 
     setSearching(true)
     setError('')
     try {
-      const res = await searchApi.search({ query: normalizedQuery, source: 'arxiv', max_results: 12 })
+      const res = await searchApi.search({
+        query: normalizedQuery,
+        source: 'arxiv',
+        page,
+        page_size: PAGE_SIZE,
+      })
       setResults(res.data.results || [])
+      setCurrentPage(res.data.page || page)
+      setTotal(res.data.total || 0)
     } catch (err: any) {
       console.error(err)
       setResults([])
+      setTotal(0)
       setError(err?.response?.data?.detail || '搜索失败，请稍后重试。')
     } finally {
       setSearching(false)
@@ -57,6 +68,10 @@ export default function SearchPage() {
     setIsImportingUrl(false)
   }
 
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const canGoPrevPage = currentPage > 1
+  const canGoNextPage = currentPage < totalPages
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
@@ -75,11 +90,11 @@ export default function SearchPage() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
+              onKeyDown={(e) => e.key === 'Enter' && void handleSearch(1)}
               placeholder="输入标题、关键词或作者，当前使用 arXiv 搜索..."
               className={styles.input}
             />
-            <button onClick={() => void handleSearch()} disabled={isSearching} className={styles.primaryBtn}>
+            <button onClick={() => void handleSearch(1)} disabled={isSearching} className={styles.primaryBtn}>
               {isSearching ? '搜索中...' : '搜索'}
             </button>
           </div>
@@ -106,6 +121,13 @@ export default function SearchPage() {
       {error ? <div className={styles.errorBanner}>{error}</div> : null}
 
       <main className={styles.results}>
+        {total > 0 ? (
+          <div className={styles.resultsToolbar}>
+            <span>共 {total} 条结果</span>
+            <span>第 {currentPage}/{totalPages} 页</span>
+          </div>
+        ) : null}
+
         {!isSearching && results.length === 0 ? (
           <div className={styles.emptyState}>
             <p>还没有搜索结果。</p>
@@ -154,6 +176,26 @@ export default function SearchPage() {
             </article>
           )
         })}
+
+        {total > 0 ? (
+          <div className={styles.pagination}>
+            <button
+              className={styles.pageBtn}
+              onClick={() => void handleSearch(currentPage - 1)}
+              disabled={!canGoPrevPage || isSearching}
+            >
+              上一页
+            </button>
+            <div className={styles.pageStatus}>{currentPage} / {totalPages}</div>
+            <button
+              className={styles.pageBtn}
+              onClick={() => void handleSearch(currentPage + 1)}
+              disabled={!canGoNextPage || isSearching}
+            >
+              下一页
+            </button>
+          </div>
+        ) : null}
       </main>
     </div>
   )

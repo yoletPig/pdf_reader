@@ -1,5 +1,8 @@
 .container {
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background:
     radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 28%),
     linear-gradient(180deg, #f8fafc 0%, #eef4ff 54%, #f5f7f3 100%);
@@ -128,7 +131,21 @@
 }
 
 .results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 0 28px 28px;
+}
+
+.resultsToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 0 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 
 .emptyState {
@@ -220,6 +237,40 @@
   flex-wrap: wrap;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
+  padding-bottom: 4px;
+}
+
+.pageBtn {
+  min-width: 94px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pageBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pageStatus {
+  min-width: 74px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
 .inlineLink {
   color: #2563eb;
   font-size: 13px;
@@ -262,5 +313,10 @@
   .errorBanner {
     margin-left: 16px;
     margin-right: 16px;
+  }
+
+  .resultsToolbar,
+  .pagination {
+    flex-direction: column;
   }
 }
