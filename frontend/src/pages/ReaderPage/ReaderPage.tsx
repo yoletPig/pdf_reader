@@ -22,6 +22,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 type ReaderMode = 'quick' | 'polish'
 type ReaderTab = 'profile' | 'selection' | 'qa' | 'full'
 type ReadStatus = 'idle' | 'reading' | 'ready' | 'empty' | 'error'
+type ColumnWidths = [number, number, number]
 
 type PageDocument = {
   markdown: string
@@ -57,6 +58,10 @@ type ReaderProfile = {
 }
 
 const PDF_HIGHLIGHT_CLASS = 'pdf-text-highlight'
+const DEFAULT_COLUMN_WIDTHS: ColumnWidths = [40, 40, 20]
+const MIN_COLUMN_WIDTHS: ColumnWidths = [26, 26, 16]
+const STACKED_LAYOUT_BREAKPOINT = 1200
+const TOOL_PANE_COLLAPSED_WIDTH = 76
 
 const LIGATURE_MAP: Record<string, string> = {
   'ﬀ': 'ff',
@@ -67,11 +72,12 @@ const LIGATURE_MAP: Record<string, string> = {
 }
 
 const TAB_LABELS: Record<ReaderTab, string> = {
+  profile: '论文画像',
   full: '全文翻译',
   selection: '选词翻译',
   qa: 'Paper QA',
-  profile: '论文画像',
 }
+const TAB_ORDER: ReaderTab[] = ['profile', 'full', 'selection', 'qa']
 
 function createQaSessionId(scope: string) {
   return `qa:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
@@ -83,6 +89,10 @@ function getQaSessionKey(scope: string) {
 
 function replaceLigatures(text: string) {
   return text.replace(/[ﬀﬁﬂﬃﬄ]/g, (char) => LIGATURE_MAP[char] || char)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function looksLikeFormulaLine(line: string) {
@@ -175,12 +185,14 @@ function MarkdownBlock({ content }: { content: string }) {
 
 export default function ReaderPage() {
   const { id } = useParams<{ id: string }>()
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
   const pdfViewportRef = useRef<HTMLDivElement | null>(null)
   const highlightQueryRef = useRef('')
   const pdfDocRef = useRef<any>(null)
   const pageTextsRef = useRef<Record<number, string>>({})
   const pageDocumentsRef = useRef<Record<string, PageDocument>>({})
   const paperRef = useRef<Paper | null>(null)
+  const expandedToolPaneWidthRef = useRef(DEFAULT_COLUMN_WIDTHS[2])
   const pendingTextLoadsRef = useRef(new Map<number, Promise<string>>())
   const autoTranslateRunRef = useRef(0)
   const [paper, setPaper] = useState<Paper | null>(null)
@@ -189,7 +201,7 @@ export default function ReaderPage() {
   const [error, setError] = useState('')
   const [scale, setScale] = useState(1.15)
   const [pdfDoc, setPdfDoc] = useState<any>(null)
-  const [activeTab, setActiveTab] = useState<ReaderTab>('full')
+  const [activeTab, setActiveTab] = useState<ReaderTab>('profile')
   const [isDebugOpen, setIsDebugOpen] = useState(false)
   const [isQaLoading, setIsQaLoading] = useState(false)
   const [isPageTranslating, setIsPageTranslating] = useState(false)
@@ -206,6 +218,8 @@ export default function ReaderPage() {
   const [qaMessages, setQaMessages] = useState<QaMessage[]>([])
   const [qaInput, setQaInput] = useState('')
   const [qaSessionId, setQaSessionId] = useState('')
+  const [columnWidths, setColumnWidths] = useState<ColumnWidths>(DEFAULT_COLUMN_WIDTHS)
+  const [isToolPaneCollapsed, setIsToolPaneCollapsed] = useState(false)
 
   const pendingPageKeysRef = useRef(new Set<string>())
   const pendingTranslationTasksRef = useRef(new Map<string, Promise<PageDocument | undefined>>())
@@ -240,10 +254,11 @@ export default function ReaderPage() {
     setQaMessages([])
     setQaInput('')
     setQaSessionId('')
-    setActiveTab('full')
+    setActiveTab('profile')
     setIsAutoFullTranslateEnabled(false)
     setIsAutoTranslating(false)
     setIsRefreshingSummary(false)
+    setIsToolPaneCollapsed(false)
     setAutoTranslateProgress({ completed: 0, total: 0, failedPages: [] })
     autoTranslateRunRef.current += 1
     pendingTextLoadsRef.current.clear()
@@ -305,10 +320,59 @@ export default function ReaderPage() {
     readerProfile.summary_translation_mode === currentMode &&
     readerProfile.auto_full_translation_status === 'completed' &&
     (readerProfile.translated_pages || 0) >= autoTranslateTotal
+  const canGoPrevPage = currentPage > 1
+  const canGoNextPage = numPages > 0 && currentPage < numPages
+  const effectiveMainPaneWidths = useMemo(() => {
+    if (!isToolPaneCollapsed) {
+      return {
+        pdf: columnWidths[0],
+        translation: columnWidths[1],
+      }
+    }
+
+    const total = columnWidths[0] + columnWidths[1]
+    if (total <= 0) {
+      return {
+        pdf: DEFAULT_COLUMN_WIDTHS[0] + DEFAULT_COLUMN_WIDTHS[2] / 2,
+        translation: DEFAULT_COLUMN_WIDTHS[1] + DEFAULT_COLUMN_WIDTHS[2] / 2,
+      }
+    }
+
+    return {
+      pdf: Number(((columnWidths[0] / total) * 100).toFixed(2)),
+      translation: Number(((columnWidths[1] / total) * 100).toFixed(2)),
+    }
+  }, [columnWidths, isToolPaneCollapsed])
 
   useEffect(() => {
     setShowFullSource(!currentPageDocument?.markdown)
   }, [currentPageDocument?.markdown, currentPage, currentMode])
+
+  const goToPage = (pageNumber: number) => {
+    if (!numPages) return
+    setPage(clamp(pageNumber, 1, numPages))
+  }
+
+  const goToPreviousPage = () => {
+    if (!canGoPrevPage) return
+    goToPage(currentPage - 1)
+  }
+
+  const goToNextPage = () => {
+    if (!canGoNextPage) return
+    goToPage(currentPage + 1)
+  }
+
+  const toggleToolPane = () => {
+    if (!isToolPaneCollapsed) {
+      expandedToolPaneWidthRef.current = columnWidths[2]
+      setIsToolPaneCollapsed(true)
+      return
+    }
+
+    setColumnWidths((prev) => [prev[0], prev[1], expandedToolPaneWidthRef.current])
+    setIsToolPaneCollapsed(false)
+  }
 
   const statusLabel = useMemo(() => {
     switch (currentReadStatus) {
@@ -709,6 +773,34 @@ export default function ReaderPage() {
     void loadPersistedPageDocument(currentPage, currentMode)
   }, [id, currentPage, currentMode, currentPageDocument?.markdown])
 
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false
+      return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (numPages <= 0 || isTypingTarget(event.target)) {
+        return
+      }
+
+      if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+        if (!canGoPrevPage) return
+        event.preventDefault()
+        goToPreviousPage()
+      }
+
+      if (event.key === 'ArrowRight' || event.key === 'PageDown') {
+        if (!canGoNextPage) return
+        event.preventDefault()
+        goToNextPage()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [canGoNextPage, canGoPrevPage, currentPage, numPages])
+
   const submitQa = async (question: string, displayText?: string) => {
     if (!id || !question.trim() || isQaLoading || !qaSessionId) return
 
@@ -810,6 +902,364 @@ export default function ReaderPage() {
     }
   }
 
+  const handleResizeStart = (handleIndex: 0 | 1) => (event: React.PointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth <= STACKED_LAYOUT_BREAKPOINT) return
+
+    const container = workspaceRef.current
+    if (!container) return
+
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidths = [...columnWidths] as ColumnWidths
+    const containerWidth = container.getBoundingClientRect().width
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaPercent = ((moveEvent.clientX - startX) / containerWidth) * 100
+
+      if (handleIndex === 0) {
+        const nextLeft = clamp(
+          startWidths[0] + deltaPercent,
+          MIN_COLUMN_WIDTHS[0],
+          100 - startWidths[2] - MIN_COLUMN_WIDTHS[1],
+        )
+        const actualDelta = nextLeft - startWidths[0]
+        setColumnWidths([
+          Number(nextLeft.toFixed(2)),
+          Number((startWidths[1] - actualDelta).toFixed(2)),
+          startWidths[2],
+        ])
+        return
+      }
+
+      const nextMiddle = clamp(
+        startWidths[1] + deltaPercent,
+        MIN_COLUMN_WIDTHS[1],
+        100 - startWidths[0] - MIN_COLUMN_WIDTHS[2],
+      )
+      const actualDelta = nextMiddle - startWidths[1]
+      expandedToolPaneWidthRef.current = Number((startWidths[2] - actualDelta).toFixed(2))
+      setColumnWidths([
+        startWidths[0],
+        Number(nextMiddle.toFixed(2)),
+        expandedToolPaneWidthRef.current,
+      ])
+    }
+
+    const onUp = () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  const renderMainPaneContent = () => {
+    return (
+      <>
+        {currentReadMessage ? <div className={styles.notice}>{currentReadMessage}</div> : null}
+
+        <div className={styles.card}>
+          <div className={styles.cardTitleRow}>
+            <div className={styles.cardTitle}>翻译结果</div>
+            <div className={styles.metaRow}>
+              <span>第 {currentPage} 页</span>
+              <span>{currentMode === 'quick' ? '快速模式' : '严谨模式'}</span>
+              {currentPageDocument?.modelUsed ? <span>{currentPageDocument.modelUsed}</span> : null}
+            </div>
+          </div>
+          {isPageTranslating ? (
+            <div className={styles.inlineLoading}>
+              <div className={styles.spinner} />
+              <p>正在生成 Markdown 翻译...</p>
+            </div>
+          ) : currentPageDocument?.markdown ? (
+            <div className={styles.markdownWrap}>
+              <MarkdownBlock content={currentPageDocument.markdown} />
+            </div>
+          ) : (
+            <div className={styles.emptyState}>
+              <p>当前页还没有译文。先在右侧工具栏执行“翻译当前页”。</p>
+            </div>
+          )}
+        </div>
+      </>
+    )
+  }
+
+  const renderToolPaneContent = () => {
+    if (activeTab === 'full') {
+      return (
+        <div className={styles.toolPanel}>
+          <div className={styles.panelHeader}>
+            <div>
+              <strong>全文翻译工具</strong>
+              <span className={styles.panelHint}>右侧负责控制，左侧看原文，中列连续看译文。</span>
+            </div>
+          </div>
+
+          <div className={styles.panelActions}>
+            <button
+              className={`${styles.modeChip} ${currentMode === 'quick' ? styles.modeChipActive : ''}`}
+              onClick={() => setMode('quick')}
+            >
+              快速
+            </button>
+            <button
+              className={`${styles.modeChip} ${currentMode === 'polish' ? styles.modeChipActive : ''}`}
+              onClick={() => setMode('polish')}
+            >
+              严谨
+            </button>
+            <button
+              className={styles.primaryAction}
+              onClick={() => void handleTranslateFullPage(true)}
+              disabled={!currentPageText || currentReadStatus === 'reading' || isPageTranslating}
+            >
+              {isPageTranslating ? '翻译中...' : '翻译当前页'}
+            </button>
+            <button className={styles.secondaryAction} onClick={() => void handleAutoFullTranslateToggle()}>
+              {isAutoFullTranslateEnabled ? '关闭后台全文翻译' : '开启后台全文翻译'}
+            </button>
+            {currentPageDocument?.markdown ? (
+              <button className={styles.secondaryAction} onClick={() => setShowFullSource((value) => !value)}>
+                {showFullSource ? '隐藏提取原文' : '查看提取原文'}
+              </button>
+            ) : null}
+          </div>
+
+          {isAutoFullTranslateEnabled ? (
+            <div className={styles.card}>
+              <div className={styles.cardTitle}>后台全文翻译进度</div>
+              <div className={styles.metaRow}>
+                <span>{isAutoTranslating ? '运行中' : hasCompletedCurrentProfile ? '已完成' : '已停止'}</span>
+                <span>
+                  {autoTranslateProgress.completed}/{autoTranslateProgress.total || autoTranslateTotal || 0} 页
+                </span>
+                <span>模式 {currentMode}</span>
+              </div>
+              {autoTranslateProgress.failedPages.length ? (
+                <p className={styles.placeholderText}>失败页: {autoTranslateProgress.failedPages.join(', ')}</p>
+              ) : (
+                <p className={styles.placeholderText}>当前没有失败页。</p>
+              )}
+            </div>
+          ) : null}
+
+          {(showFullSource || !currentPageDocument?.markdown) ? (
+            <div className={styles.card}>
+              <div className={styles.cardTitle}>提取原文</div>
+              {currentReadStatus === 'reading' ? (
+                <div className={styles.inlineLoading}>
+                  <div className={styles.spinner} />
+                  <p>正在读取当前页文本...</p>
+                </div>
+              ) : (
+                <pre className={styles.sourceText}>{currentPageText || '[当前页暂无可提取文本]'}</pre>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )
+    }
+
+    if (activeTab === 'selection') {
+      return (
+        <div className={styles.toolPanel}>
+          <div className={styles.panelHeader}>
+            <div>
+              <strong>选词工具</strong>
+              <span className={styles.panelHint}>仅响应左侧 PDF 文本层内的选区。</span>
+            </div>
+          </div>
+
+          <div className={styles.panelActions}>
+            <button
+              className={`${styles.modeChip} ${currentMode === 'quick' ? styles.modeChipActive : ''}`}
+              onClick={() => setMode('quick')}
+            >
+              快速
+            </button>
+            <button
+              className={`${styles.modeChip} ${currentMode === 'polish' ? styles.modeChipActive : ''}`}
+              onClick={() => setMode('polish')}
+            >
+              严谨
+            </button>
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.cardTitle}>选中文本</div>
+            <div className={styles.selectionScroll}>{selectedText || '请在左侧 PDF 中框选文本。'}</div>
+            {selectedText ? (
+              <div className={styles.inlineActions}>
+                <button className={styles.primaryAction} onClick={() => void handleTranslateSelection(currentMode)} disabled={isSelectionTranslating}>
+                  {isSelectionTranslating ? '翻译中...' : '翻译选中文本'}
+                </button>
+                <button className={styles.secondaryAction} onClick={() => void handleAskSelection()} disabled={isQaLoading}>
+                  用这段发起 QA
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )
+    }
+
+    if (activeTab === 'qa') {
+      return (
+        <div className={styles.toolPanel}>
+          <div className={styles.panelHeader}>
+            <div>
+              <strong>Paper QA 控制台</strong>
+              <span className={styles.panelHint}>支持多轮追问，默认结合论文画像、摘要和整篇检索结果回答。</span>
+            </div>
+            <div className={styles.panelActions}>
+              <button
+                className={styles.secondaryAction}
+                onClick={() => {
+                  if (!id) return
+                  const nextSessionId = createQaSessionId(`paper:${id}`)
+                  window.sessionStorage.setItem(getQaSessionKey(`paper:${id}`), nextSessionId)
+                  setQaSessionId(nextSessionId)
+                  setQaMessages([])
+                }}
+              >
+                重置对话
+              </button>
+            </div>
+          </div>
+
+          {selectedText ? (
+            <div className={styles.card}>
+              <div className={styles.cardTitle}>当前选中文本</div>
+              <div className={styles.selectionScroll}>{selectedText}</div>
+            </div>
+          ) : null}
+
+          <div className={styles.qaComposer}>
+            <textarea
+              value={qaInput}
+              onChange={(event) => setQaInput(event.target.value)}
+              placeholder="输入关于当前论文的问题..."
+              className={styles.qaInput}
+              rows={8}
+            />
+            <div className={styles.inlineActions}>
+              <button className={styles.primaryAction} onClick={() => void submitQa(qaInput)} disabled={isQaLoading}>
+                {isQaLoading ? '发送中...' : '发送问题'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    if (activeTab === 'profile') {
+      return (
+        <div className={styles.toolPanel}>
+          <div className={styles.panelHeader}>
+            <div>
+              <strong>论文画像</strong>
+              <span className={styles.panelHint}>沉淀标题、摘要、PDF 元数据和基于全文译文生成的论文总结。</span>
+            </div>
+            <div className={styles.panelActions}>
+              <button
+                className={styles.secondaryAction}
+                onClick={() => {
+                  if (!id) return
+                  void refreshReaderProfile(currentMode, {
+                    auto_full_translation_enabled: isAutoFullTranslateEnabled,
+                    auto_full_translation_mode: currentMode,
+                    auto_full_translation_status: isAutoTranslating ? 'running' : readerProfile.auto_full_translation_status || 'idle',
+                    translated_pages: autoTranslateProgress.completed,
+                    total_pages: autoTranslateTotal,
+                    failed_pages: autoTranslateProgress.failedPages,
+                  })
+                }}
+                disabled={isRefreshingSummary || autoTranslateProgress.completed === 0}
+              >
+                {isRefreshingSummary ? '刷新中...' : '刷新论文画像'}
+              </button>
+              <button className={styles.secondaryAction} onClick={() => setIsDebugOpen((value) => !value)}>
+                {isDebugOpen ? '隐藏调试' : '显示调试'}
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.metaRow}>
+            <span>{paper?.title || '未命名论文'}</span>
+            <span>{autoTranslateTotal} 页</span>
+            <span>{readerProfile.summary_translation_mode || currentMode}</span>
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.cardTitle}>AI 论文画像</div>
+            {isRefreshingSummary ? (
+              <div className={styles.inlineLoading}>
+                <div className={styles.spinner} />
+                <p>正在刷新论文画像...</p>
+              </div>
+            ) : paper?.ai_summary_md ? (
+              <div className={styles.markdownWrap}>
+                <MarkdownBlock content={paper.ai_summary_md} />
+              </div>
+            ) : (
+              <p className={styles.placeholderText}>开启并完成后台全文翻译后，这里会生成整篇论文的画像与摘要。</p>
+            )}
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.cardTitle}>基础元数据</div>
+            <div className={styles.markdownWrap}>
+              <p><strong>标题</strong>: {paper?.title || '暂无'}</p>
+              <p><strong>摘要</strong>: {paper?.abstract || '暂无'}</p>
+              <p><strong>页数</strong>: {paper?.page_count || autoTranslateTotal || 0}</p>
+            </div>
+          </div>
+
+          {paper?.pdf_metadata && Object.keys(paper.pdf_metadata).length ? (
+            <div className={styles.card}>
+              <div className={styles.cardTitle}>PDF 元数据</div>
+              <div className={styles.metaGrid}>
+                {Object.entries(paper.pdf_metadata).map(([key, value]) => (
+                  <div key={key} className={styles.metaItem}>
+                    <strong>{key}</strong>
+                    <span>{String(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {isDebugOpen ? (
+            <div className={styles.card}>
+              <div className={styles.cardTitle}>提取调试</div>
+              <ul className={styles.debugList}>
+                <li>如果全文翻译失败页较多，优先检查 PDF 是否为扫描页或图片页。</li>
+                <li>如果 QA 回答偏窄，先刷新论文画像，再重新提问整篇总结类问题。</li>
+                <li>如果公式乱码明显，问题通常在 PDF 提取文本而不是 Markdown 渲染。</li>
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )
+    }
+
+    return (
+      <div className={styles.toolPanel}>
+        <div className={styles.emptyState}>
+          <p>请选择右侧工具栏功能。</p>
+        </div>
+      </div>
+    )
+  }
+
   if (error) {
     return (
       <div className={styles.container}>
@@ -825,29 +1275,14 @@ export default function ReaderPage() {
 
   return (
     <div className={styles.container}>
-      <div className={styles.workspace}>
-        <section className={styles.pdfPane}>
+      <div ref={workspaceRef} className={styles.workspace}>
+        <section className={styles.pdfPane} style={{ flexBasis: `${effectiveMainPaneWidths.pdf}%` }}>
           <div className={styles.floatingChrome}>
             <Link to="/" className={styles.backLink}>
               返回
             </Link>
             <div className={styles.titleBadge}>{paper?.title || '阅读工作台'}</div>
             <div className={styles.controlCluster}>
-              <div className={styles.controlGroup}>
-                <button className={styles.controlBtn} onClick={() => setPage(Math.max(1, currentPage - 1))} disabled={currentPage <= 1}>
-                  ◀
-                </button>
-                <span className={styles.controlInfo}>
-                  {currentPage} / {numPages || '?'}
-                </span>
-                <button
-                  className={styles.controlBtn}
-                  onClick={() => setPage(Math.min(numPages, currentPage + 1))}
-                  disabled={currentPage >= numPages}
-                >
-                  ▶
-                </button>
-              </div>
               <div className={styles.controlGroup}>
                 <button className={styles.controlBtn} onClick={() => setScale((value) => Math.max(0.75, value - 0.1))}>
                   −
@@ -910,353 +1345,89 @@ export default function ReaderPage() {
           )}
         </section>
 
-        <section className={styles.sidePane}>
-          <div className={styles.tabBar}>
-            {(Object.keys(TAB_LABELS) as ReaderTab[]).map((tab) => (
-              <button
-                key={tab}
-                className={`${styles.tabBtn} ${activeTab === tab ? styles.tabBtnActive : ''}`}
-                onClick={() => setActiveTab(tab)}
-              >
-                {TAB_LABELS[tab]}
+        <div
+          className={styles.resizeHandle}
+          onPointerDown={handleResizeStart(0)}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整原文列和译文列宽度"
+        />
+
+        <section className={styles.translationPane} style={{ flexBasis: `${effectiveMainPaneWidths.translation}%` }}>
+          <div className={styles.translationContent}>
+            <div className={styles.tabPanel}>{renderMainPaneContent()}</div>
+          </div>
+
+          <div className={styles.translationFooter}>
+            <div className={styles.pageNavigator}>
+              <button className={styles.pageNavBtn} onClick={goToPreviousPage} disabled={!canGoPrevPage}>
+                上一页
               </button>
-            ))}
-            <div className={styles.statusCluster}>
-              <span className={styles.statusChip}>{statusLabel}</span>
-              <span className={styles.statusChip}>{currentPageText.length} chars</span>
-              {isAutoFullTranslateEnabled ? (
-                <span className={styles.statusChip}>
-                  全文 {autoTranslateProgress.completed}/{autoTranslateProgress.total || numPages || '?'}
-                </span>
-              ) : null}
+              <div className={styles.pageIndicator}>
+                <strong>{currentPage}</strong>
+                <span>/ {numPages || '?'}</span>
+                <small>ArrowLeft / ArrowRight</small>
+              </div>
+              <button className={styles.pageNavBtn} onClick={goToNextPage} disabled={!canGoNextPage}>
+                下一页
+              </button>
             </div>
           </div>
+        </section>
 
-          <div className={styles.sideContent}>
-            {activeTab === 'full' && (
-              <div className={styles.tabPanel}>
-                <div className={styles.panelHeader}>
-                  <div>
-                    <strong>当前页全文翻译</strong>
-                    <span className={styles.panelHint}>手动打开后台全文翻译后，会顺序翻译整篇论文并生成论文画像；已完成的画像不会在重新进入页面时重复刷新。</span>
-                  </div>
-                  <div className={styles.panelActions}>
-                    <button
-                      className={`${styles.modeChip} ${currentMode === 'quick' ? styles.modeChipActive : ''}`}
-                      onClick={() => setMode('quick')}
-                    >
-                      快速
-                    </button>
-                    <button
-                      className={`${styles.modeChip} ${currentMode === 'polish' ? styles.modeChipActive : ''}`}
-                      onClick={() => setMode('polish')}
-                    >
-                      严谨
-                    </button>
-                    <button
-                      className={styles.primaryAction}
-                      onClick={() => void handleTranslateFullPage(true)}
-                      disabled={!currentPageText || currentReadStatus === 'reading' || isPageTranslating}
-                    >
-                      {isPageTranslating ? '翻译中...' : '翻译当前页'}
-                    </button>
-                    <button className={styles.secondaryAction} onClick={() => void handleAutoFullTranslateToggle()}>
-                      {isAutoFullTranslateEnabled ? '关闭后台全文翻译' : '开启后台全文翻译'}
-                    </button>
-                    {currentPageDocument?.markdown ? (
-                      <button className={styles.secondaryAction} onClick={() => setShowFullSource((value) => !value)}>
-                        {showFullSource ? '隐藏提取原文' : '查看提取原文'}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
+        {!isToolPaneCollapsed ? (
+          <div
+            className={styles.resizeHandle}
+            onPointerDown={handleResizeStart(1)}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整译文列和工具列宽度"
+          />
+        ) : null}
 
-                {currentReadMessage ? <div className={styles.notice}>{currentReadMessage}</div> : null}
-
-                {isAutoFullTranslateEnabled ? (
-                  <div className={styles.card}>
-                    <div className={styles.cardTitle}>后台全文翻译进度</div>
-                    <div className={styles.metaRow}>
-                      <span>{isAutoTranslating ? '运行中' : hasCompletedCurrentProfile ? '已完成' : '已停止'}</span>
-                      <span>
-                        {autoTranslateProgress.completed}/{autoTranslateProgress.total || autoTranslateTotal || 0} 页
+        <aside
+          className={`${styles.toolPane} ${isToolPaneCollapsed ? styles.toolPaneCollapsed : ''}`}
+          style={{ flexBasis: isToolPaneCollapsed ? `${TOOL_PANE_COLLAPSED_WIDTH}px` : `${columnWidths[2]}%` }}
+        >
+          {isToolPaneCollapsed ? (
+            <div className={styles.collapsedRail}>
+              <button className={styles.collapseToggle} onClick={toggleToolPane}>
+                展开
+              </button>
+              <span className={styles.collapsedLabel}>{TAB_LABELS[activeTab]}</span>
+            </div>
+          ) : (
+            <>
+              <div className={styles.tabBar}>
+                {TAB_ORDER.map((tab) => (
+                  <button
+                    key={tab}
+                    className={`${styles.tabBtn} ${activeTab === tab ? styles.tabBtnActive : ''}`}
+                    onClick={() => setActiveTab(tab)}
+                  >
+                    {TAB_LABELS[tab]}
+                  </button>
+                ))}
+                <div className={styles.tabBarActions}>
+                  {isAutoFullTranslateEnabled ? (
+                    <div className={styles.statusCluster}>
+                      <span className={styles.statusChip}>
+                        全文 {autoTranslateProgress.completed}/{autoTranslateProgress.total || numPages || '?'}
                       </span>
-                      <span>模式 {currentMode}</span>
-                      {readerProfile.last_summary_refresh_at ? <span>画像已刷新</span> : null}
-                    </div>
-                    {autoTranslateProgress.failedPages.length ? (
-                      <p className={styles.placeholderText}>
-                        失败页: {autoTranslateProgress.failedPages.join(', ')}
-                      </p>
-                    ) : (
-                      <p className={styles.placeholderText}>当前没有失败页。</p>
-                    )}
-                  </div>
-                ) : null}
-
-                {showFullSource || !currentPageDocument?.markdown ? (
-                  <div className={styles.card}>
-                    <div className={styles.cardTitle}>提取原文</div>
-                    {currentReadStatus === 'reading' ? (
-                      <div className={styles.inlineLoading}>
-                        <div className={styles.spinner} />
-                        <p>正在读取当前页文本...</p>
-                      </div>
-                    ) : (
-                      <pre className={styles.sourceText}>{currentPageText || '[当前页暂无可提取文本]'}</pre>
-                    )}
-                  </div>
-                ) : null}
-
-                <div className={styles.card}>
-                  <div className={styles.cardTitle}>翻译结果</div>
-                  {isPageTranslating ? (
-                    <div className={styles.inlineLoading}>
-                      <div className={styles.spinner} />
-                      <p>正在生成 Markdown 翻译...</p>
-                    </div>
-                  ) : currentPageDocument?.markdown ? (
-                    <>
-                      {currentPageDocument.modelUsed ? (
-                        <div className={styles.metaRow}>
-                          <span>{currentPageDocument.modelUsed}</span>
-                        </div>
-                      ) : null}
-                      <div className={styles.markdownWrap}>
-                        <MarkdownBlock content={currentPageDocument.markdown} />
-                      </div>
-                    </>
-                  ) : (
-                    <p className={styles.placeholderText}>先确认左侧当前页原文提取正常，再点击“翻译当前页”。</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'selection' && (
-              <div className={styles.tabPanel}>
-                <div className={styles.panelHeader}>
-                  <div>
-                    <strong>选词翻译</strong>
-                    <span className={styles.panelHint}>仅响应左侧 PDF 文本层内的选区。</span>
-                  </div>
-                  <div className={styles.panelActions}>
-                    <button
-                      className={`${styles.modeChip} ${currentMode === 'quick' ? styles.modeChipActive : ''}`}
-                      onClick={() => setMode('quick')}
-                    >
-                      快速
-                    </button>
-                    <button
-                      className={`${styles.modeChip} ${currentMode === 'polish' ? styles.modeChipActive : ''}`}
-                      onClick={() => setMode('polish')}
-                    >
-                      严谨
-                    </button>
-                  </div>
-                </div>
-
-                <div className={styles.card}>
-                  <div className={styles.cardTitle}>选中文本</div>
-                  <div className={styles.selectionScroll}>{selectedText || '请在左侧 PDF 中框选文本。'}</div>
-                  {selectedText ? (
-                    <div className={styles.inlineActions}>
-                      <button className={styles.primaryAction} onClick={() => void handleTranslateSelection(currentMode)} disabled={isSelectionTranslating}>
-                        {isSelectionTranslating ? '翻译中...' : '翻译选中文本'}
-                      </button>
-                      <button className={styles.secondaryAction} onClick={() => void handleAskSelection()} disabled={isQaLoading}>
-                        用这段发起 QA
-                      </button>
                     </div>
                   ) : null}
-                </div>
-
-                <div className={styles.card}>
-                  <div className={styles.cardTitle}>翻译结果</div>
-                  {isSelectionTranslating ? (
-                    <div className={styles.inlineLoading}>
-                      <div className={styles.spinner} />
-                      <p>正在翻译选中文本...</p>
-                    </div>
-                  ) : currentSelectionTranslation ? (
-                    <div className={styles.markdownWrap}>
-                      <MarkdownBlock content={currentSelectionTranslation} />
-                    </div>
-                  ) : (
-                    <p className={styles.placeholderText}>翻译结果会显示在这里。</p>
-                  )}
+                  <button className={styles.collapseToggle} onClick={toggleToolPane}>
+                    收起
+                  </button>
                 </div>
               </div>
-            )}
 
-            {activeTab === 'qa' && (
-              <div className={styles.tabPanel}>
-                <div className={styles.panelHeader}>
-                  <div>
-                    <strong>Paper QA</strong>
-                    <span className={styles.panelHint}>支持多轮追问。默认结合论文画像、摘要、历史对话和整篇检索结果回答。</span>
-                  </div>
-                  <div className={styles.panelActions}>
-                    <button
-                      className={styles.secondaryAction}
-                      onClick={() => {
-                        if (!id) return
-                        const nextSessionId = createQaSessionId(`paper:${id}`)
-                        window.sessionStorage.setItem(getQaSessionKey(`paper:${id}`), nextSessionId)
-                        setQaSessionId(nextSessionId)
-                        setQaMessages([])
-                      }}
-                    >
-                      重置对话
-                    </button>
-                  </div>
-                </div>
-
-                <div className={styles.qaMessages}>
-                  {qaMessages.length === 0 ? (
-                    <div className={styles.emptyState}>
-                      <p>可以直接问整篇论文的方法、实验、结论，也可以带着选中文本发起问答。</p>
-                    </div>
-                  ) : (
-                    qaMessages.map((message) => (
-                      <div key={message.id} className={`${styles.qaMessage} ${styles[message.role]}`}>
-                        <div className={styles.qaBubble}>
-                          <MarkdownBlock content={message.content} />
-                          {message.sources?.length ? (
-                            <details className={styles.qaSources}>
-                              <summary>引用来源</summary>
-                              {message.sources.map((source, index) => (
-                                <button
-                                  key={`${message.id}-${index}`}
-                                  className={styles.qaSourceItem}
-                                  onClick={() => focusSourceText(source.chunk_text, source.page)}
-                                >
-                                  <strong>{source.paper_title}</strong> · p.{source.page}
-                                  <p>{source.chunk_text}</p>
-                                </button>
-                              ))}
-                            </details>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                  {isQaLoading && (
-                    <div className={`${styles.qaMessage} ${styles.assistant}`}>
-                      <div className={styles.qaBubble}>
-                        <div className={styles.inlineLoading}>
-                          <div className={styles.spinner} />
-                          <p>正在分析问题...</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className={styles.qaComposer}>
-                  <textarea
-                    value={qaInput}
-                    onChange={(event) => setQaInput(event.target.value)}
-                    placeholder="输入关于当前论文的问题..."
-                    className={styles.qaInput}
-                    rows={4}
-                  />
-                  <div className={styles.inlineActions}>
-                    <button className={styles.primaryAction} onClick={() => void submitQa(qaInput)} disabled={isQaLoading}>
-                      {isQaLoading ? '发送中...' : '发送问题'}
-                    </button>
-                  </div>
-                </div>
+              <div className={styles.toolPaneContent}>
+                <div className={styles.tabPanel}>{renderToolPaneContent()}</div>
               </div>
-            )}
-
-            {activeTab === 'profile' && (
-              <div className={styles.tabPanel}>
-                <div className={styles.panelHeader}>
-                  <div>
-                    <strong>论文画像</strong>
-                    <span className={styles.panelHint}>沉淀标题、摘要、PDF 元数据和基于全文译文生成的论文总结。</span>
-                  </div>
-                  <div className={styles.panelActions}>
-                    <button
-                      className={styles.secondaryAction}
-                      onClick={() => id && void refreshReaderProfile(currentMode, {
-                        auto_full_translation_enabled: isAutoFullTranslateEnabled,
-                        auto_full_translation_mode: currentMode,
-                        auto_full_translation_status: isAutoTranslating ? 'running' : readerProfile.auto_full_translation_status || 'idle',
-                        translated_pages: autoTranslateProgress.completed,
-                        total_pages: autoTranslateTotal,
-                        failed_pages: autoTranslateProgress.failedPages,
-                      })}
-                      disabled={isRefreshingSummary || autoTranslateProgress.completed === 0}
-                    >
-                      {isRefreshingSummary ? '刷新中...' : '刷新论文画像'}
-                    </button>
-                    <button className={styles.secondaryAction} onClick={() => setIsDebugOpen((value) => !value)}>
-                      {isDebugOpen ? '隐藏调试' : '显示调试'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className={styles.metaRow}>
-                  <span>{paper?.title || '未命名论文'}</span>
-                  <span>{autoTranslateTotal} 页</span>
-                  <span>{readerProfile.summary_translation_mode || currentMode}</span>
-                </div>
-
-                <div className={styles.card}>
-                  <div className={styles.cardTitle}>基础元数据</div>
-                  <div className={styles.markdownWrap}>
-                    <p><strong>标题</strong>: {paper?.title || '暂无'}</p>
-                    <p><strong>摘要</strong>: {paper?.abstract || '暂无'}</p>
-                    <p><strong>页数</strong>: {paper?.page_count || autoTranslateTotal || 0}</p>
-                  </div>
-                </div>
-
-                {paper?.pdf_metadata && Object.keys(paper.pdf_metadata).length ? (
-                  <div className={styles.card}>
-                    <div className={styles.cardTitle}>PDF 元数据</div>
-                    <div className={styles.metaGrid}>
-                      {Object.entries(paper.pdf_metadata).map(([key, value]) => (
-                        <div key={key} className={styles.metaItem}>
-                          <strong>{key}</strong>
-                          <span>{String(value)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className={styles.card}>
-                  <div className={styles.cardTitle}>AI 论文画像</div>
-                  {isRefreshingSummary ? (
-                    <div className={styles.inlineLoading}>
-                      <div className={styles.spinner} />
-                      <p>正在刷新论文画像...</p>
-                    </div>
-                  ) : paper?.ai_summary_md ? (
-                    <div className={styles.markdownWrap}>
-                      <MarkdownBlock content={paper.ai_summary_md} />
-                    </div>
-                  ) : (
-                    <p className={styles.placeholderText}>开启并完成后台全文翻译后，这里会生成整篇论文的画像与摘要。</p>
-                  )}
-                </div>
-
-                {isDebugOpen ? (
-                  <div className={styles.card}>
-                    <div className={styles.cardTitle}>提取调试</div>
-                    <ul className={styles.debugList}>
-                      <li>如果全文翻译失败页较多，优先检查 PDF 是否为扫描页或图片页。</li>
-                      <li>如果 QA 回答偏窄，先刷新论文画像，再重新提问整篇总结类问题。</li>
-                      <li>如果公式乱码明显，问题通常在 PDF 提取文本而不是 Markdown 渲染。</li>
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            )}
-          </div>
-        </section>
+            </>
+          )}
+        </aside>
       </div>
     </div>
   )
