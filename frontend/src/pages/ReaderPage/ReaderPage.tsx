@@ -57,7 +57,6 @@ type ReaderProfile = {
   last_summary_refresh_at?: string | null
 }
 
-const PDF_HIGHLIGHT_CLASS = 'pdf-text-highlight'
 const DEFAULT_COLUMN_WIDTHS: ColumnWidths = [40, 40, 20]
 const MIN_COLUMN_WIDTHS: ColumnWidths = [26, 26, 16]
 const STACKED_LAYOUT_BREAKPOINT = 1200
@@ -93,6 +92,14 @@ function replaceLigatures(text: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function normalizeAbstractText(text: string | undefined) {
+  const value = (text || '').trim()
+  if (!value) return '暂无摘要'
+  if (/^文件大小:\s*\d+\s*bytes$/i.test(value)) return '暂无摘要'
+  if (/^PDF 解析失败:/i.test(value)) return '暂无摘要'
+  return value
 }
 
 function looksLikeFormulaLine(line: string) {
@@ -172,6 +179,16 @@ function preprocessMarkdown(text: string) {
     .replace(/\\\((.+?)\\\)/g, (_, expr) => `$${String(expr).trim()}$`)
 }
 
+function formatSelectionForQa(text: string, page: number) {
+  const quoted = text
+    .trim()
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')
+
+  return `【第 ${page} 页选中文本】\n${quoted}\n\n`
+}
+
 function MarkdownBlock({ content }: { content: string }) {
   return (
     <ReactMarkdown
@@ -187,11 +204,12 @@ export default function ReaderPage() {
   const { id } = useParams<{ id: string }>()
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const pdfViewportRef = useRef<HTMLDivElement | null>(null)
-  const highlightQueryRef = useRef('')
+  const qaInputRef = useRef<HTMLTextAreaElement | null>(null)
   const pdfDocRef = useRef<any>(null)
   const pageTextsRef = useRef<Record<number, string>>({})
   const pageDocumentsRef = useRef<Record<string, PageDocument>>({})
   const paperRef = useRef<Paper | null>(null)
+  const pendingSelectionRef = useRef<{ page: number; text: string } | null>(null)
   const expandedToolPaneWidthRef = useRef(DEFAULT_COLUMN_WIDTHS[2])
   const pendingTextLoadsRef = useRef(new Map<number, Promise<string>>())
   const autoTranslateRunRef = useRef(0)
@@ -263,6 +281,7 @@ export default function ReaderPage() {
     autoTranslateRunRef.current += 1
     pendingTextLoadsRef.current.clear()
     pendingTranslationTasksRef.current.clear()
+    pendingSelectionRef.current = null
     setLoading(true)
 
     papersApi
@@ -286,8 +305,14 @@ export default function ReaderPage() {
   }, [id, clearSelection, setCurrentPaper, setPage, setTotalPages])
 
   useEffect(() => {
+    const pendingSelection = pendingSelectionRef.current
+    if (pendingSelection?.page === currentPage) {
+      setSelection(pendingSelection.text, null)
+      pendingSelectionRef.current = null
+      return
+    }
     clearSelection()
-  }, [currentPage, clearSelection])
+  }, [currentPage, clearSelection, setSelection])
 
   useEffect(() => {
     pdfDocRef.current = pdfDoc
@@ -314,6 +339,7 @@ export default function ReaderPage() {
   const currentSelectionTranslation = selectionCacheKey ? (cache[selectionCacheKey]?.[currentMode] ?? '') : ''
   const pdfUrl = id ? papersApi.getFileUrl(id) : ''
   const readerProfile = (paper?.reader_profile || {}) as ReaderProfile
+  const displayAbstract = normalizeAbstractText(paper?.abstract)
   const autoTranslateTotal = numPages || paper?.page_count || readerProfile.total_pages || 0
   const hasCompletedCurrentProfile =
     Boolean(paper?.ai_summary_md) &&
@@ -322,6 +348,9 @@ export default function ReaderPage() {
     (readerProfile.translated_pages || 0) >= autoTranslateTotal
   const canGoPrevPage = currentPage > 1
   const canGoNextPage = numPages > 0 && currentPage < numPages
+  const qaPlaceholder = selectedText
+    ? `基于第 ${currentPage} 页当前高亮片段提问...`
+    : `输入问题，默认结合第 ${currentPage} 页与整篇论文作答...`
   const effectiveMainPaneWidths = useMemo(() => {
     if (!isToolPaneCollapsed) {
       return {
@@ -419,40 +448,6 @@ export default function ReaderPage() {
 
     setSelection(selection.toString().trim(), null)
     setActiveTab('selection')
-  }
-
-  const applyTextHighlight = (query: string) => {
-    const textLayer = pdfViewportRef.current?.querySelector('.react-pdf__Page__textContent')
-    if (!textLayer) return
-
-    const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLSpanElement[]
-    spans.forEach((span) => span.classList.remove(PDF_HIGHLIGHT_CLASS))
-
-    const normalizedQuery = query.trim().replace(/\s+/g, ' ').toLowerCase()
-    if (!normalizedQuery) return
-
-    const keywords = normalizedQuery
-      .split(/\s+/)
-      .filter((word) => word.length >= 3)
-      .slice(0, 8)
-
-    let firstMatch: HTMLSpanElement | null = null
-    for (const span of spans) {
-      const content = span.textContent?.trim().replace(/\s+/g, ' ').toLowerCase() || ''
-      if (!content) continue
-
-      const matched =
-        normalizedQuery.includes(content) ||
-        content.includes(normalizedQuery) ||
-        keywords.some((word) => content.includes(word))
-
-      if (matched) {
-        span.classList.add(PDF_HIGHLIGHT_CLASS)
-        if (!firstMatch) firstMatch = span
-      }
-    }
-
-    firstMatch?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
   }
 
   const ensurePageText = async (pageNumber: number) => {
@@ -855,22 +850,33 @@ export default function ReaderPage() {
     }
   }
 
-  const handleAskSelection = async () => {
+  const handleAskSelection = () => {
     if (!selectedText) return
-    const prompt = `请结合当前论文语境解释下面这段内容，并用要点形式给出结论和依据：\n\n${selectedText}`
-    const display = `### 选中文本提问\n\n> ${selectedText}`
-    await submitQa(prompt, display)
+    const draft = formatSelectionForQa(selectedText, currentPage)
+    setQaInput((prev) => {
+      const trimmed = prev.trim()
+      if (!trimmed) return draft
+      if (prev.includes(draft.trim())) return prev
+      return `${trimmed}\n\n${draft}`
+    })
+    setActiveTab('qa')
+    window.requestAnimationFrame(() => {
+      const input = qaInputRef.current
+      if (!input) return
+      input.focus()
+      const length = input.value.length
+      input.setSelectionRange(length, length)
+    })
   }
 
   const focusSourceText = (text: string, page?: number) => {
     if (!text.trim()) return
-    highlightQueryRef.current = text
     if (page && page !== currentPage) {
+      pendingSelectionRef.current = { page, text }
       setPage(page)
     } else {
-      window.requestAnimationFrame(() => applyTextHighlight(text))
+      setSelection(text, null)
     }
-    setSelection(text, null)
     setActiveTab('selection')
   }
 
@@ -894,12 +900,6 @@ export default function ReaderPage() {
       ...prev,
       [currentPage]: `TextLayer 读取失败：${textError.message || '未知错误'}`,
     }))
-  }
-
-  const handleTextLayerRender = () => {
-    if (highlightQueryRef.current) {
-      window.requestAnimationFrame(() => applyTextHighlight(highlightQueryRef.current))
-    }
   }
 
   const handleResizeStart = (handleIndex: 0 | 1) => (event: React.PointerEvent<HTMLDivElement>) => {
@@ -998,8 +998,7 @@ export default function ReaderPage() {
         <div className={styles.toolPanel}>
           <div className={styles.panelHeader}>
             <div>
-              <strong>全文翻译工具</strong>
-              <span className={styles.panelHint}>右侧负责控制，左侧看原文，中列连续看译文。</span>
+              <strong>全文翻译</strong>
             </div>
           </div>
 
@@ -1073,8 +1072,7 @@ export default function ReaderPage() {
         <div className={styles.toolPanel}>
           <div className={styles.panelHeader}>
             <div>
-              <strong>选词工具</strong>
-              <span className={styles.panelHint}>仅响应左侧 PDF 文本层内的选区。</span>
+              <strong>选词翻译</strong>
             </div>
           </div>
 
@@ -1113,11 +1111,10 @@ export default function ReaderPage() {
 
     if (activeTab === 'qa') {
       return (
-        <div className={styles.toolPanel}>
+        <div className={`${styles.toolPanel} ${styles.qaToolPanel}`}>
           <div className={styles.panelHeader}>
             <div>
-              <strong>Paper QA 控制台</strong>
-              <span className={styles.panelHint}>支持多轮追问，默认结合论文画像、摘要和整篇检索结果回答。</span>
+              <strong>Paper QA</strong>
             </div>
             <div className={styles.panelActions}>
               <button
@@ -1135,20 +1132,62 @@ export default function ReaderPage() {
             </div>
           </div>
 
-          {selectedText ? (
-            <div className={styles.card}>
-              <div className={styles.cardTitle}>当前选中文本</div>
-              <div className={styles.selectionScroll}>{selectedText}</div>
-            </div>
-          ) : null}
+          <div className={`${styles.qaMessages} ${styles.toolQaMessages}`}>
+            {qaMessages.length === 0 ? (
+              <div className={styles.emptyState}>
+                <p>围绕当前页、选中片段或整篇论文发起追问。</p>
+              </div>
+            ) : (
+              qaMessages.map((message) => (
+                <div key={message.id} className={`${styles.qaMessage} ${styles[message.role]}`}>
+                  <div className={styles.qaBubble}>
+                    <MarkdownBlock content={message.content} />
+                    {message.sources?.length ? (
+                      <details className={styles.qaSources}>
+                        <summary>引用来源</summary>
+                        {message.sources.map((source, index) => (
+                          <button
+                            key={`${message.id}-${index}`}
+                            className={styles.qaSourceItem}
+                            onClick={() => focusSourceText(source.chunk_text, source.page)}
+                          >
+                            <strong>{source.paper_title}</strong> · p.{source.page}
+                            <p>{source.chunk_text}</p>
+                          </button>
+                        ))}
+                      </details>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+            {isQaLoading ? (
+              <div className={`${styles.qaMessage} ${styles.assistant}`}>
+                <div className={styles.qaBubble}>
+                  <div className={styles.inlineLoading}>
+                    <div className={styles.spinner} />
+                    <p>正在分析问题...</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
 
           <div className={styles.qaComposer}>
             <textarea
+              ref={qaInputRef}
               value={qaInput}
               onChange={(event) => setQaInput(event.target.value)}
-              placeholder="输入关于当前论文的问题..."
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+                  return
+                }
+                event.preventDefault()
+                void submitQa(qaInput)
+              }}
+              placeholder={qaPlaceholder}
               className={styles.qaInput}
-              rows={8}
+              rows={3}
             />
             <div className={styles.inlineActions}>
               <button className={styles.primaryAction} onClick={() => void submitQa(qaInput)} disabled={isQaLoading}>
@@ -1166,7 +1205,6 @@ export default function ReaderPage() {
           <div className={styles.panelHeader}>
             <div>
               <strong>论文画像</strong>
-              <span className={styles.panelHint}>沉淀标题、摘要、PDF 元数据和基于全文译文生成的论文总结。</span>
             </div>
             <div className={styles.panelActions}>
               <button
@@ -1186,9 +1224,9 @@ export default function ReaderPage() {
               >
                 {isRefreshingSummary ? '刷新中...' : '刷新论文画像'}
               </button>
-              <button className={styles.secondaryAction} onClick={() => setIsDebugOpen((value) => !value)}>
+              {/* <button className={styles.secondaryAction} onClick={() => setIsDebugOpen((value) => !value)}>
                 {isDebugOpen ? '隐藏调试' : '显示调试'}
-              </button>
+              </button> */}
             </div>
           </div>
 
@@ -1199,14 +1237,14 @@ export default function ReaderPage() {
           </div>
 
           <div className={styles.card}>
-            <div className={styles.cardTitle}>AI 论文画像</div>
+            {/* <div className={styles.cardTitle}>AI 论文画像</div> */}
             {isRefreshingSummary ? (
               <div className={styles.inlineLoading}>
                 <div className={styles.spinner} />
                 <p>正在刷新论文画像...</p>
               </div>
             ) : paper?.ai_summary_md ? (
-              <div className={styles.markdownWrap}>
+              <div className={`${styles.markdownWrap} ${styles.compactMarkdown}`}>
                 <MarkdownBlock content={paper.ai_summary_md} />
               </div>
             ) : (
@@ -1218,7 +1256,7 @@ export default function ReaderPage() {
             <div className={styles.cardTitle}>基础元数据</div>
             <div className={styles.markdownWrap}>
               <p><strong>标题</strong>: {paper?.title || '暂无'}</p>
-              <p><strong>摘要</strong>: {paper?.abstract || '暂无'}</p>
+              <p><strong>摘要</strong>: {displayAbstract}</p>
               <p><strong>页数</strong>: {paper?.page_count || autoTranslateTotal || 0}</p>
             </div>
           </div>
@@ -1322,7 +1360,6 @@ export default function ReaderPage() {
                   renderAnnotationLayer={true}
                   onGetTextSuccess={handlePageTextSuccess}
                   onGetTextError={handlePageTextError}
-                  onRenderTextLayerSuccess={handleTextLayerRender}
                   devicePixelRatio={Math.min(3, window.devicePixelRatio || 1)}
                   className={styles.pdfPage}
                 />
@@ -1366,7 +1403,7 @@ export default function ReaderPage() {
               <div className={styles.pageIndicator}>
                 <strong>{currentPage}</strong>
                 <span>/ {numPages || '?'}</span>
-                <small>ArrowLeft / ArrowRight</small>
+                {/* <small>ArrowLeft / ArrowRight</small> */}
               </div>
               <button className={styles.pageNavBtn} onClick={goToNextPage} disabled={!canGoNextPage}>
                 下一页

@@ -199,12 +199,6 @@
   margin: 0 auto;
 }
 
-:global(.react-pdf__Page__textContent span.pdf-text-highlight) {
-  background: rgba(251, 191, 36, 0.35);
-  border-radius: 3px;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.22);
-}
-
 .selectionDock {
   position: absolute;
   left: 50%;
@@ -270,8 +264,16 @@
   overflow: auto;
 }
 
+.toolPaneContent {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .translationFooter {
-  padding: 14px 16px 18px;
+  display: flex;
+  justify-content: center;
+  padding: 10px 14px 12px;
   border-top: 1px solid rgba(226, 232, 240, 0.95);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.96) 30%),
@@ -282,22 +284,22 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  margin: 0 auto;
-  padding: 8px;
+  gap: 10px;
+  margin: 0;
+  padding: 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.95);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
 }
 
 .pageNavBtn {
   min-width: 86px;
-  height: 38px;
-  padding: 0 14px;
+  height: 34px;
+  padding: 0 12px;
   background: rgba(241, 245, 249, 0.96);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -307,42 +309,54 @@
 }
 
 .pageIndicator {
-  min-width: 142px;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  padding: 0 8px;
+  gap: 4px;
+  padding: 0 6px;
   text-align: center;
+  white-space: nowrap;
 }
 
 .pageIndicator strong {
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   color: var(--color-text);
 }
 
 .pageIndicator span {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-text-secondary);
 }
 
 .pageIndicator small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-text-tertiary);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
+  margin-left: 6px;
 }
 
 .tabBar {
   align-items: center;
 }
 
+.toolPane .tabBar {
+  gap: 6px;
+  padding: 10px 12px;
+  align-items: flex-start;
+}
+
+.toolPane .tabBar strong {
+  font-size: 13px;
+}
+
 .tabBtn {
-  padding: 8px 12px;
-  border-radius: 999px;
+  padding: 4px 8px;
+  border-radius: 12px;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   border: 1px solid rgba(203, 213, 225, 0.95);
   background: rgba(255, 255, 255, 0.92);
   transition: transform var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
@@ -389,9 +403,29 @@
   gap: 14px;
 }
 
+.toolPane .toolPanel {
+  gap: 10px;
+  padding: 5px;
+}
+
+.toolPaneContent > .tabPanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.qaToolPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .tabPanel {
   min-height: 100%;
-  padding: 16px;
+  padding: 6px;
 }
 
 .panelHeader {
@@ -402,9 +436,18 @@
   flex-wrap: wrap;
 }
 
+.toolPane .panelHeader {
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
 .panelHeader strong {
   display: block;
   font-size: 15px;
+}
+
+.toolPane .panelHeader strong {
+  font-size: 13px;
 }
 
 .panelActions,
@@ -419,11 +462,9 @@
 .secondaryAction,
 .primaryAction,
 .collapseToggle {
-  min-height: 38px;
-  padding: 8px 13px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 7px 11px;
+  border-radius: 12px;
+  font-size: 10px;
 }
 
 .modeChip,
@@ -443,6 +484,12 @@
 .primaryAction {
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   color: white;
+}
+
+.toolPane .secondaryAction,
+.toolPane .primaryAction {
+  padding: 7px 12px;
+  font-size: 12px;
 }
 
 .secondaryAction:hover:not(:disabled),
@@ -483,6 +530,12 @@
   border-radius: 20px;
   border: 1px solid rgba(226, 232, 240, 0.95);
   background: rgba(255, 255, 255, 0.95);
+}
+
+.toolPane .card,
+.toolPane .qaComposer {
+  padding: 12px;
+  border-radius: 16px;
 }
 
 .cardTitleRow {
@@ -535,6 +588,11 @@
   font-size: 13px;
 }
 
+.toolPane .selectionScroll {
+  max-height: 180px;
+  padding: 10px 12px;
+}
+
 .metaRow {
   display: flex;
   gap: 8px;
@@ -558,6 +616,11 @@
   min-height: 140px;
 }
 
+.toolPane .inlineLoading {
+  min-height: 72px;
+  gap: 8px;
+}
+
 .loadingState {
   min-height: 320px;
 }
@@ -570,6 +633,12 @@
   background: rgba(248, 250, 252, 0.82);
 }
 
+.toolPane .emptyState {
+  min-height: 92px;
+  padding: 12px;
+  border-radius: 14px;
+}
+
 .errorState {
   height: 100%;
 }
@@ -578,6 +647,12 @@
   color: var(--color-text-tertiary);
   font-size: 13px;
   line-height: 1.7;
+}
+
+.toolPane .placeholderText,
+.toolPane .emptyState p {
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .markdownWrap,
@@ -712,6 +787,17 @@
   gap: 12px;
 }
 
+.toolQaMessages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.toolPane .qaMessages {
+  gap: 8px;
+}
+
 .qaMessage {
   display: flex;
 }
@@ -732,6 +818,12 @@
   border: 1px solid rgba(226, 232, 240, 0.95);
 }
 
+.toolPane .qaBubble {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+
 .user .qaBubble {
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   color: white;
@@ -742,16 +834,30 @@
   background: rgba(255, 255, 255, 0.18);
 }
 
+.user .qaBubble blockquote {
+  color: rgba(255, 255, 255, 0.92);
+  border-left-color: rgba(255, 255, 255, 0.32);
+}
+
 .qaSources {
   margin-top: 12px;
   border-top: 1px solid rgba(226, 232, 240, 0.95);
   padding-top: 12px;
 }
 
+.toolPane .qaSources {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
 .qaSources summary {
   cursor: pointer;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.toolPane .qaSources summary {
+  font-size: 11px;
 }
 
 .qaSourceItem {
@@ -764,6 +870,14 @@
   color: var(--color-text-secondary);
 }
 
+.toolPane .qaSourceItem {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .qaSourceItem:hover {
   background: rgba(239, 246, 255, 0.96);
 }
@@ -774,6 +888,11 @@
   font-size: 12px;
 }
 
+.toolPane .qaSourceItem p {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
 .qaComposer {
   padding: 14px;
   border-radius: 20px;
@@ -781,21 +900,112 @@
   background: rgba(255, 255, 255, 0.95);
 }
 
+.toolPane .qaComposer {
+  margin-top: auto;
+  padding: 8px 0 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
 .qaInput {
   width: 100%;
-  min-height: 140px;
+  min-height: 120px;
   resize: vertical;
-  padding: 12px 14px;
-  border-radius: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
   border: 1px solid rgba(203, 213, 225, 0.95);
   background: white;
   color: var(--color-text);
   outline: none;
 }
 
+.toolPane .qaInput {
+  min-height: 78px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.toolPane .qaInput::placeholder {
+  color: var(--color-text-tertiary);
+}
+
 .qaInput:focus {
   border-color: rgba(37, 99, 235, 0.45);
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08);
+}
+
+.compactMarkdown h1,
+.toolPane .markdownWrap h1 {
+  font-size: 20px;
+}
+
+.compactMarkdown h2,
+.toolPane .markdownWrap h2 {
+  font-size: 17px;
+}
+
+.compactMarkdown h3,
+.toolPane .markdownWrap h3 {
+  font-size: 15px;
+}
+
+.compactMarkdown h1,
+.compactMarkdown h2,
+.compactMarkdown h3,
+.toolPane .markdownWrap h1,
+.toolPane .markdownWrap h2,
+.toolPane .markdownWrap h3 {
+  margin-top: 12px;
+  margin-bottom: 8px;
+  line-height: 1.28;
+}
+
+.toolPane .qaBubble,
+.toolPane .qaBubble p,
+.toolPane .qaBubble li,
+.toolPane .qaBubble td,
+.toolPane .qaBubble th {
+  font-size: 12px;
+  line-height: 1.72;
+}
+
+.toolPane .qaBubble p,
+.toolPane .qaBubble ul,
+.toolPane .qaBubble ol,
+.toolPane .qaBubble table,
+.toolPane .qaBubble pre,
+.toolPane .qaBubble blockquote {
+  margin-bottom: 8px;
+}
+
+.toolPane .qaBubble ul,
+.toolPane .qaBubble ol {
+  padding-left: 18px;
+}
+
+.toolPane .qaBubble code {
+  font-size: 11px;
+}
+
+.toolPane .qaBubble pre code {
+  padding: 10px 11px;
+}
+
+.toolPane .qaBubble h1 {
+  font-size: 15px;
+}
+
+.toolPane .qaBubble h2 {
+  font-size: 14px;
+}
+
+.toolPane .qaBubble h3 {
+  font-size: 13px;
 }
 
 .debugList {
@@ -884,8 +1094,7 @@
   }
 
   .translationFooter {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding: 10px 12px 12px;
   }
 
   .pageNavigator {
