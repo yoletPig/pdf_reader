@@ -2,7 +2,6 @@
 import os
 import re
 import uuid
-import shutil
 import json
 from typing import Optional
 from datetime import datetime
@@ -25,6 +24,11 @@ router = APIRouter(prefix="/api/papers", tags=["论文管理"])
 
 # 内存存储（后续可替换为数据库查询）
 _papers_store: dict[str, dict] = {}
+
+_PLACEHOLDER_ABSTRACT_PATTERNS = (
+    re.compile(r"^文件大小:\s*\d+\s*bytes$", re.IGNORECASE),
+    re.compile(r"^PDF 解析失败:", re.IGNORECASE),
+)
 
 
 def _safe_json_loads(value: str, fallback):
@@ -65,6 +69,242 @@ def _merge_reader_profile(paper: Paper, updates: dict) -> dict:
 
 def _sync_memory_store(paper_data: dict):
     _papers_store[paper_data["id"]] = paper_data
+
+
+def _normalize_inline_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", (value or "").replace("\x00", " ")).strip(" \t\r\n-_")
+
+
+def _default_title_from_path(file_path: str) -> str:
+    return os.path.splitext(os.path.basename(file_path or ""))[0]
+
+
+def _is_placeholder_abstract(value: str | None) -> bool:
+    text = _normalize_inline_text(value)
+    if not text:
+        return True
+    return any(pattern.match(text) for pattern in _PLACEHOLDER_ABSTRACT_PATTERNS)
+
+
+def _is_placeholder_title(title: str | None, file_path: str) -> bool:
+    normalized = _normalize_inline_text(title)
+    fallback = _normalize_inline_text(_default_title_from_path(file_path))
+    if not normalized:
+        return True
+    if normalized.lower().endswith(".pdf"):
+        return True
+    return bool(fallback and normalized.lower() == fallback.lower())
+
+
+def _looks_like_heading(text: str) -> bool:
+    candidate = _normalize_inline_text(text)
+    if not candidate:
+        return False
+    if re.match(r"^(keywords?|index terms?)\b", candidate, re.IGNORECASE):
+        return True
+    if re.match(r"^(introduction|background|methods?|related work|conclusion|references)\b", candidate, re.IGNORECASE):
+        return True
+    if re.match(r"^([1I]|[A-Z])[\.\)]\s+[A-Z]", candidate):
+        return True
+    return candidate.isupper() and 1 <= len(candidate.split()) <= 8
+
+
+def _extract_first_page_lines(page) -> list[dict]:
+    page_dict = page.get_text("dict")
+    lines: list[dict] = []
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            text = _normalize_inline_text("".join(span.get("text", "") for span in spans))
+            if not text:
+                continue
+            font_sizes = [float(span.get("size", 0) or 0) for span in spans]
+            bbox = line.get("bbox", [0, 0, 0, 0])
+            lines.append(
+                {
+                    "text": text,
+                    "size": (sum(font_sizes) / len(font_sizes)) if font_sizes else 0.0,
+                    "y0": float(bbox[1]),
+                    "y1": float(bbox[3]),
+                }
+            )
+    lines.sort(key=lambda item: (item["y0"], -item["size"]))
+    return lines
+
+
+def _extract_title_from_lines(lines: list[dict], page_height: float, fallback_title: str) -> str:
+    if not lines:
+        return fallback_title
+
+    max_size = max((line["size"] for line in lines), default=0.0)
+    threshold = max(max_size * 0.9, 12.0)
+    candidates = [
+        line for line in lines
+        if line["size"] >= threshold
+        and line["y0"] <= page_height * 0.38
+        and len(line["text"]) >= 6
+        and not _looks_like_heading(line["text"])
+    ]
+    if not candidates:
+        candidates = [
+            line for line in lines
+            if line["size"] >= max(max_size * 0.82, 11.0)
+            and line["y0"] <= page_height * 0.32
+            and len(line["text"]) >= 6
+            and not _looks_like_heading(line["text"])
+        ]
+    if not candidates:
+        return fallback_title
+
+    merged: list[str] = [candidates[0]["text"]]
+    prev = candidates[0]
+    for line in candidates[1:]:
+        close_enough = (line["y0"] - prev["y1"]) <= max(prev["size"], line["size"]) * 1.6
+        similar_size = abs(line["size"] - prev["size"]) <= 1.5
+        if close_enough and similar_size:
+            merged.append(line["text"])
+            prev = line
+            continue
+        break
+
+    title = _normalize_inline_text(" ".join(merged))
+    if len(title) > 300 or len(title) < 6:
+        return fallback_title
+    return title
+
+
+def _extract_abstract_from_lines(lines: list[dict]) -> str:
+    if not lines:
+        return ""
+
+    start_index: int | None = None
+    collected: list[str] = []
+    max_chars = 2200
+
+    for index, line in enumerate(lines):
+        text = line["text"]
+        match = re.match(r"^abstract[\s:.\-–—]*(.*)$", text, re.IGNORECASE)
+        if not match:
+            continue
+        start_index = index + 1
+        inline_tail = _normalize_inline_text(match.group(1))
+        if inline_tail:
+            collected.append(inline_tail)
+        break
+
+    if start_index is None:
+        return ""
+
+    for line in lines[start_index:]:
+        text = line["text"]
+        if _looks_like_heading(text):
+            break
+        if len(" ".join(collected)) >= max_chars:
+            break
+        collected.append(text)
+
+    abstract = _normalize_inline_text(" ".join(collected))
+    if len(abstract) < 40:
+        return ""
+    return abstract[:max_chars]
+
+
+def _extract_pdf_metadata(file_path: str, fallback_title: str) -> dict:
+    extracted = {
+        "title": fallback_title,
+        "abstract": "",
+        "page_count": 0,
+        "pdf_metadata": {},
+    }
+
+    import fitz
+
+    doc = fitz.open(file_path)
+    try:
+        extracted["page_count"] = len(doc)
+        metadata = {
+            key: str(value)
+            for key, value in (doc.metadata or {}).items()
+            if value not in (None, "")
+        }
+        extracted["pdf_metadata"] = metadata
+
+        first_page = doc[0] if len(doc) > 0 else None
+        lines = _extract_first_page_lines(first_page) if first_page else []
+        page_height = float(first_page.rect.height) if first_page else 0.0
+
+        metadata_title = _normalize_inline_text(metadata.get("title"))
+        visual_title = _extract_title_from_lines(lines, page_height, fallback_title)
+        chosen_title = metadata_title
+        if _is_placeholder_title(chosen_title, fallback_title) or len(chosen_title) < len(visual_title):
+            chosen_title = visual_title
+        extracted["title"] = _normalize_inline_text(chosen_title) or fallback_title
+
+        abstract = _extract_abstract_from_lines(lines)
+        if not abstract:
+            subject = _normalize_inline_text(metadata.get("subject"))
+            if len(subject) >= 40:
+                abstract = subject
+        extracted["abstract"] = abstract
+
+        extracted["pdf_metadata"] = {
+            **metadata,
+            "detected_title": extracted["title"],
+            "abstract_source": "first_page_abstract" if abstract else "",
+        }
+        return extracted
+    finally:
+        doc.close()
+
+
+async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> bool:
+    if not paper.file_path or not os.path.exists(paper.file_path):
+        return False
+
+    needs_refresh = (
+        _is_placeholder_title(paper.title, paper.file_path)
+        or _is_placeholder_abstract(paper.abstract)
+        or paper.page_count <= 0
+        or not _safe_json_loads(paper.pdf_metadata_json, {})
+    )
+    if not needs_refresh:
+        return False
+
+    try:
+        extracted = _extract_pdf_metadata(paper.file_path, _default_title_from_path(paper.file_path))
+    except ImportError:
+        return False
+    except Exception:
+        return False
+
+    changed = False
+    detected_title = extracted["title"]
+    detected_abstract = extracted["abstract"]
+    detected_metadata = extracted["pdf_metadata"]
+    detected_page_count = extracted["page_count"]
+
+    if detected_title and (
+        _is_placeholder_title(paper.title, paper.file_path) or not _normalize_inline_text(paper.title)
+    ) and detected_title != paper.title:
+        paper.title = detected_title
+        changed = True
+
+    if detected_abstract and detected_abstract != (paper.abstract or ""):
+        paper.abstract = detected_abstract
+        changed = True
+
+    if detected_page_count and detected_page_count != (paper.page_count or 0):
+        paper.page_count = detected_page_count
+        changed = True
+
+    current_metadata = _safe_json_loads(paper.pdf_metadata_json, {})
+    if detected_metadata and detected_metadata != current_metadata:
+        paper.pdf_metadata_json = json.dumps(detected_metadata, ensure_ascii=False)
+        changed = True
+
+    return changed
 
 
 async def _load_paper_or_404(db: AsyncSession, paper_id: str) -> Paper:
@@ -181,6 +421,14 @@ async def list_papers(
 
         result = await db.execute(stmt)
         papers = result.scalars().all()
+        metadata_changed = False
+        for paper in papers:
+            metadata_changed = await _refresh_paper_metadata_if_needed(db, paper) or metadata_changed
+        if metadata_changed:
+            await db.commit()
+        serialized_papers = [_paper_to_dict(p) for p in papers]
+        for paper_data in serialized_papers:
+            _sync_memory_store(paper_data)
 
         # count
         from sqlalchemy import func
@@ -191,7 +439,7 @@ async def list_papers(
         total = total_result.scalar() or 0
 
         return {
-            "papers": [_paper_to_dict(p) for p in papers],
+            "papers": serialized_papers,
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -233,30 +481,17 @@ async def upload_paper(
 
     file_size = len(content)
 
-    # 提取标题（从文件名）
-    title = os.path.splitext(file.filename)[0]
-
-    # 尝试解析 PDF 获取元数据
+    fallback_title = os.path.splitext(file.filename)[0]
+    title = fallback_title
     abstract = ""
     page_count = 0
     pdf_metadata: dict[str, str] = {}
     try:
-        import fitz
-        doc = fitz.open(file_path)
-        page_count = len(doc)
-        # 尝试从 PDF 元数据获取标题
-        meta = doc.metadata
-        pdf_metadata = {
-            key: str(value)
-            for key, value in (meta or {}).items()
-            if value not in (None, "")
-        }
-        if meta and meta.get("title"):
-            title = meta["title"]
-        # 提取第一页文本作为摘要
-        if page_count > 0:
-            abstract = doc[0].get_text()[:1000]
-        doc.close()
+        extracted = _extract_pdf_metadata(str(file_path), fallback_title)
+        title = extracted["title"] or fallback_title
+        abstract = extracted["abstract"]
+        page_count = extracted["page_count"]
+        pdf_metadata = extracted["pdf_metadata"]
     except ImportError:
         abstract = f"文件大小: {file_size} bytes"
     except Exception as e:
@@ -329,18 +564,21 @@ async def upload_paper(
 @router.get("/{paper_id}")
 async def get_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
     """获取论文详情"""
-    # 先查内存
-    if paper_id in _papers_store:
-        return _papers_store[paper_id]
-
-    # 再查数据库
     try:
         result = await db.execute(select(Paper).where(Paper.id == paper_id))
         paper = result.scalar_one_or_none()
         if paper:
-            return _paper_to_dict(paper)
+            if await _refresh_paper_metadata_if_needed(db, paper):
+                await db.commit()
+                await db.refresh(paper)
+            paper_data = _paper_to_dict(paper)
+            _sync_memory_store(paper_data)
+            return paper_data
     except Exception:
         pass
+
+    if paper_id in _papers_store:
+        return _papers_store[paper_id]
 
     raise HTTPException(status_code=404, detail="论文不存在")
 
