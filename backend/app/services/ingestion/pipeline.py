@@ -8,7 +8,7 @@ from app.models.paper import Paper
 from app.models.paper_block import PaperBlock
 from app.models.paper_chunk import PaperChunk
 from app.services.pdf import pdf_service
-from app.services.rag.service import ChunkSplitter
+from app.services.ingestion.chunker import ChunkSplitter
 
 
 class PaperIngestionService:

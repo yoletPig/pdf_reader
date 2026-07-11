@@ -6,4 +6,4 @@
 node_modules
 *.pyc
 dist
-*.db
+/backend/data

@@ -68,17 +68,12 @@ async def health_check():
     return {"status": "ok", "version": settings.APP_VERSION}
 
 
-# 注册所有 API 路由
-from app.api import papers, search, translation, explain, rag, config, prompts, notes, intent_api, agent_api, agent_runs
+# 注册当前仍保留的 API 路由
+from app.api import papers, search, translation, config, prompts, agent_runs
 
 app.include_router(papers.router)
 app.include_router(search.router)
 app.include_router(translation.router)
-app.include_router(explain.router)
-app.include_router(rag.router)
 app.include_router(config.router)
 app.include_router(prompts.router)
-app.include_router(notes.router)
-app.include_router(intent_api.router)
-app.include_router(agent_api.router)
 app.include_router(agent_runs.router)

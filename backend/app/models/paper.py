@@ -1,7 +1,7 @@
 """论文数据模型"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text, Boolean, JSON
+from sqlalchemy import String, Integer, Float, DateTime, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -27,6 +27,4 @@ class Paper(Base):
     read_progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0.0 - 1.0
     is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)  # 是否已向量化入库
 
-    # 关系
-    notes: Mapped[list] = relationship("Note", back_populates="paper", cascade="all, delete-orphan")
     translation_caches: Mapped[list] = relationship("TranslationCache", back_populates="paper", cascade="all, delete-orphan")
