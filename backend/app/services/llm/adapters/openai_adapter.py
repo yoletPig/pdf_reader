@@ -20,11 +20,16 @@ class OpenAIAdapter(BaseAdapter):
         except ImportError as exc:
             raise RuntimeError("缺少 openai 依赖，请先安装 openai 包") from exc
 
-        http_client = httpx.AsyncClient(
-            base_url=config.base_url or "https://api.openai.com/v1",
-            timeout=120.0,
-            trust_env=config.trust_env,
-        )
+        try:
+            http_client = httpx.AsyncClient(
+                base_url=config.base_url or "https://api.openai.com/v1",
+                timeout=120.0,
+                trust_env=config.trust_env,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "当前环境启用了 SOCKS 代理，但缺少 socksio 依赖。请安装 `httpx[socks]` 或 `socksio`。"
+            ) from exc
         self.client = AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url or "https://api.openai.com/v1",

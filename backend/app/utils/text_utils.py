@@ -64,6 +64,7 @@ def extract_arxiv_id(text: str) -> str | None:
     # 匹配 arxiv.org/abs/XXXX.XXXXX 或 arxiv:XXXX.XXXXX
     patterns = [
         r'arxiv\.org/abs/([0-9]+\.[0-9]+(?:v\d+)?)',
+        r'arxiv\.org/pdf/([0-9]+\.[0-9]+(?:v\d+)?)',
         r'arxiv:([0-9]+\.[0-9]+(?:v\d+)?)',
         r'arXiv:([0-9]+\.[0-9]+(?:v\d+)?)',
         r'\[([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)\]',

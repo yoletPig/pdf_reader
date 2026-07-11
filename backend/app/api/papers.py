@@ -79,6 +79,17 @@ def _default_title_from_path(file_path: str) -> str:
     return os.path.splitext(os.path.basename(file_path or ""))[0]
 
 
+def _sanitize_filename(filename: str | None, fallback_stem: str = "paper") -> str:
+    candidate = _normalize_inline_text(filename) or fallback_stem
+    candidate = candidate.replace("/", "_").replace("\\", "_")
+    candidate = re.sub(r"[^\w.\- ()\u4e00-\u9fff]+", "_", candidate).strip(" ._")
+    if not candidate:
+        candidate = fallback_stem
+    if not candidate.lower().endswith(".pdf"):
+        candidate = f"{candidate}.pdf"
+    return candidate
+
+
 def _is_placeholder_abstract(value: str | None) -> bool:
     text = _normalize_inline_text(value)
     if not text:
@@ -307,6 +318,115 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
     return changed
 
 
+async def create_paper_from_pdf_bytes(
+    db: AsyncSession,
+    *,
+    filename: str,
+    content: bytes,
+    source: str = "local",
+    source_id: str = "",
+    authors: Optional[list[str]] = None,
+    abstract: str = "",
+    title: str = "",
+    year: Optional[int] = None,
+    extra_pdf_metadata: Optional[dict[str, str]] = None,
+) -> dict:
+    paper_id = str(uuid.uuid4())
+    paper_dir = settings.PAPERS_DIR / paper_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+
+    fallback_title = _normalize_inline_text(title) or os.path.splitext(filename)[0] or "paper"
+    safe_filename = _sanitize_filename(filename, fallback_title or "paper")
+    file_path = paper_dir / safe_filename
+    file_path.write_bytes(content)
+    file_size = len(content)
+
+    detected_title = fallback_title
+    detected_abstract = ""
+    page_count = 0
+    pdf_metadata: dict[str, str] = {}
+
+    try:
+        extracted = _extract_pdf_metadata(str(file_path), fallback_title)
+        detected_title = extracted["title"] or fallback_title
+        detected_abstract = extracted["abstract"]
+        page_count = extracted["page_count"]
+        pdf_metadata = extracted["pdf_metadata"]
+    except ImportError:
+        detected_abstract = f"文件大小: {file_size} bytes"
+    except Exception as exc:
+        detected_abstract = f"PDF 解析失败: {str(exc)[:200]}"
+
+    final_title = _normalize_inline_text(title) or detected_title or fallback_title
+    final_abstract = _normalize_inline_text(abstract) or detected_abstract
+    merged_pdf_metadata = {
+        **pdf_metadata,
+        **(extra_pdf_metadata or {}),
+    }
+    if final_title:
+        merged_pdf_metadata.setdefault("detected_title", final_title)
+
+    reader_profile = {
+        "auto_full_translation_enabled": False,
+        "auto_full_translation_mode": "quick",
+        "auto_full_translation_status": "idle",
+        "translated_pages": 0,
+        "failed_pages": [],
+        "last_summary_refresh_at": None,
+    }
+
+    paper_data = {
+        "id": paper_id,
+        "title": final_title,
+        "authors": json.dumps(authors or [], ensure_ascii=False),
+        "abstract": final_abstract,
+        "year": year if year is not None else (datetime.utcnow().year if source == "local" else None),
+        "source": source,
+        "source_id": source_id,
+        "file_path": str(file_path),
+        "tags": "[]",
+        "page_count": page_count,
+        "pdf_metadata": merged_pdf_metadata,
+        "ai_summary_md": "",
+        "reader_profile": reader_profile,
+        "added_at": datetime.utcnow().isoformat(),
+        "last_read_at": None,
+        "read_progress": 0.0,
+        "is_indexed": False,
+    }
+
+    try:
+        paper = Paper(
+            id=paper_id,
+            title=paper_data["title"],
+            authors=paper_data["authors"],
+            abstract=paper_data["abstract"],
+            year=paper_data["year"],
+            source=source,
+            source_id=source_id,
+            file_path=str(file_path),
+            tags="[]",
+            page_count=page_count,
+            pdf_metadata_json=json.dumps(merged_pdf_metadata, ensure_ascii=False),
+            ai_summary_md="",
+            reader_profile_json=json.dumps(reader_profile, ensure_ascii=False),
+            added_at=datetime.utcnow(),
+            read_progress=0.0,
+            is_indexed=False,
+        )
+        db.add(paper)
+        await db.commit()
+        await db.refresh(paper)
+        ingestion_result = await paper_ingestion_service.ingest(paper, db)
+        paper_data["is_indexed"] = ingestion_result["is_indexed"]
+        paper_data["file_path"] = paper.file_path
+    except Exception:
+        pass
+
+    _sync_memory_store(paper_data)
+    return paper_data
+
+
 async def _load_paper_or_404(db: AsyncSession, paper_id: str) -> Paper:
     result = await db.execute(select(Paper).where(Paper.id == paper_id))
     paper = result.scalar_one_or_none()
@@ -464,96 +584,14 @@ async def upload_paper(
     """上传 PDF 文件"""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
-
-    paper_id = str(uuid.uuid4())
-
-    # 创建论文目录
-    paper_dir = settings.PAPERS_DIR / paper_id
-    paper_dir.mkdir(parents=True, exist_ok=True)
-
-    # 保存文件
-    safe_filename = file.filename.replace("/", "_").replace("\\", "_")
-    file_path = paper_dir / safe_filename
     content = await file.read()
-
-    with open(file_path, "wb") as f:
-        f.write(content)
-
-    file_size = len(content)
-
-    fallback_title = os.path.splitext(file.filename)[0]
-    title = fallback_title
-    abstract = ""
-    page_count = 0
-    pdf_metadata: dict[str, str] = {}
-    try:
-        extracted = _extract_pdf_metadata(str(file_path), fallback_title)
-        title = extracted["title"] or fallback_title
-        abstract = extracted["abstract"]
-        page_count = extracted["page_count"]
-        pdf_metadata = extracted["pdf_metadata"]
-    except ImportError:
-        abstract = f"文件大小: {file_size} bytes"
-    except Exception as e:
-        abstract = f"PDF 解析失败: {str(e)[:200]}"
-
-    paper_data = {
-        "id": paper_id,
-        "title": title,
-        "authors": "[]",
-        "abstract": abstract,
-        "year": datetime.utcnow().year,
-        "source": "local",
-        "source_id": "",
-        "file_path": str(file_path),
-        "tags": "[]",
-        "page_count": page_count,
-        "pdf_metadata": pdf_metadata,
-        "ai_summary_md": "",
-        "reader_profile": {
-            "auto_full_translation_enabled": False,
-            "auto_full_translation_mode": "quick",
-            "auto_full_translation_status": "idle",
-            "translated_pages": 0,
-            "failed_pages": [],
-            "last_summary_refresh_at": None,
-        },
-        "added_at": datetime.utcnow().isoformat(),
-        "last_read_at": None,
-        "read_progress": 0.0,
-        "is_indexed": False,
-    }
-
-    # 存入数据库
-    try:
-        paper = Paper(
-            id=paper_id,
-            title=title,
-            authors="[]",
-            abstract=abstract,
-            year=datetime.utcnow().year,
-            source="local",
-            source_id="",
-            file_path=str(file_path),
-            tags="[]",
-            page_count=page_count,
-            pdf_metadata_json=json.dumps(pdf_metadata, ensure_ascii=False),
-            ai_summary_md="",
-            reader_profile_json=json.dumps(paper_data["reader_profile"], ensure_ascii=False),
-            added_at=datetime.utcnow(),
-            read_progress=0.0,
-            is_indexed=False,
-        )
-        db.add(paper)
-        await db.commit()
-        await db.refresh(paper)
-        ingestion_result = await paper_ingestion_service.ingest(paper, db)
-        paper_data["is_indexed"] = ingestion_result["is_indexed"]
-    except Exception:
-        pass  # 数据库不可用时仅用内存存储
-
-    # 内存存储
-    _sync_memory_store(paper_data)
+    paper_data = await create_paper_from_pdf_bytes(
+        db,
+        filename=file.filename,
+        content=content,
+        source="local",
+        source_id="",
+    )
 
     return {
         "message": "上传成功",

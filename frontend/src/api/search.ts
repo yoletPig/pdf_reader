@@ -11,11 +11,13 @@ export interface SearchParams {
 export interface SearchResult {
   title: string
   authors: string[]
-  year: number
+  year: number | null
   source: string
   source_id: string
   abstract: string
   citation_count?: number
+  url?: string
+  pdf_url?: string
 }
 
 export interface SearchResponse {
@@ -26,5 +28,5 @@ export interface SearchResponse {
 
 export const searchApi = {
   search: (params: SearchParams) => apiClient.get<SearchResponse>('/search', { params }),
-  import: (data: { source: string; source_id: string }) => apiClient.post('/search/import', data),
+  import: (data: { source?: string; source_id?: string; url?: string }) => apiClient.post('/search/import', data),
 }
