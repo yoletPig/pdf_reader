@@ -32,8 +32,19 @@ export interface UploadResponse {
   paper: Paper
 }
 
+export interface PaperListParams {
+  page?: number
+  page_size?: number
+  query?: string
+  tag?: string
+  source?: string
+  indexed?: boolean
+  year?: number
+  sort?: 'recent' | 'title' | 'year' | 'progress'
+}
+
 export const papersApi = {
-  list: () => apiClient.get<PaperListResponse>('/papers'),
+  list: (params?: PaperListParams) => apiClient.get<PaperListResponse>('/papers', { params }),
   get: (id: string) => apiClient.get<Paper>(`/papers/${id}`),
   updateReaderProfile: (id: string, data: Record<string, any>) =>
     apiClient.patch<Paper>(`/papers/${id}/reader-profile`, data),

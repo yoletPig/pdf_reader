@@ -3,13 +3,14 @@ import os
 import re
 import uuid
 import json
+import shutil
 from typing import Optional
 from datetime import datetime
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func, or_
 
 from app.database import get_db
 from app.config import settings
@@ -463,6 +464,52 @@ async def _load_translated_pages(db: AsyncSession, paper_id: str, mode: str) -> 
     ]
 
 
+def _apply_memory_paper_filters(
+    papers: list[dict],
+    *,
+    query: str = "",
+    tag: Optional[str] = None,
+    source: Optional[str] = None,
+    indexed: Optional[bool] = None,
+    year: Optional[int] = None,
+    sort: str = "recent",
+) -> list[dict]:
+    normalized_query = (query or "").strip().lower()
+    filtered = papers
+
+    if normalized_query:
+        filtered = [
+            paper
+            for paper in filtered
+            if normalized_query in (paper.get("title") or "").lower()
+            or normalized_query in (paper.get("abstract") or "").lower()
+            or normalized_query in (paper.get("authors") or "").lower()
+        ]
+
+    if tag:
+        filtered = [paper for paper in filtered if tag in (paper.get("tags") or "")]
+
+    if source and source != "all":
+        filtered = [paper for paper in filtered if (paper.get("source") or "") == source]
+
+    if indexed is not None:
+        filtered = [paper for paper in filtered if bool(paper.get("is_indexed")) is indexed]
+
+    if year is not None:
+        filtered = [paper for paper in filtered if paper.get("year") == year]
+
+    if sort == "title":
+        filtered.sort(key=lambda paper: (paper.get("title") or "").lower())
+    elif sort == "year":
+        filtered.sort(key=lambda paper: (paper.get("year") or 0, paper.get("added_at") or ""), reverse=True)
+    elif sort == "progress":
+        filtered.sort(key=lambda paper: (paper.get("read_progress") or 0, paper.get("added_at") or ""), reverse=True)
+    else:
+        filtered.sort(key=lambda paper: paper.get("added_at") or "", reverse=True)
+
+    return filtered
+
+
 async def _generate_ai_summary_md(paper: Paper, translated_pages: list[dict], mode: str) -> str:
     if not translated_pages:
         return (
@@ -528,15 +575,55 @@ async def _generate_ai_summary_md(paper: Paper, translated_pages: list[dict], mo
 @router.get("")
 async def list_papers(
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 24,
+    query: str = "",
     tag: Optional[str] = None,
+    source: Optional[str] = None,
+    indexed: Optional[bool] = None,
+    year: Optional[int] = None,
+    sort: str = "recent",
     db: AsyncSession = Depends(get_db),
 ):
     """获取论文列表"""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    sort = sort if sort in {"recent", "title", "year", "progress"} else "recent"
     try:
-        stmt = select(Paper).order_by(Paper.added_at.desc())
+        stmt = select(Paper)
+        count_stmt = select(func.count(Paper.id))
+
+        normalized_query = (query or "").strip()
+        if normalized_query:
+            like_query = f"%{normalized_query}%"
+            condition = or_(
+                Paper.title.ilike(like_query),
+                Paper.abstract.ilike(like_query),
+                Paper.authors.ilike(like_query),
+            )
+            stmt = stmt.where(condition)
+            count_stmt = count_stmt.where(condition)
         if tag:
             stmt = stmt.where(Paper.tags.contains(tag))
+            count_stmt = count_stmt.where(Paper.tags.contains(tag))
+        if source and source != "all":
+            stmt = stmt.where(Paper.source == source)
+            count_stmt = count_stmt.where(Paper.source == source)
+        if indexed is not None:
+            stmt = stmt.where(Paper.is_indexed == indexed)
+            count_stmt = count_stmt.where(Paper.is_indexed == indexed)
+        if year is not None:
+            stmt = stmt.where(Paper.year == year)
+            count_stmt = count_stmt.where(Paper.year == year)
+
+        if sort == "title":
+            stmt = stmt.order_by(Paper.title.asc(), Paper.added_at.desc())
+        elif sort == "year":
+            stmt = stmt.order_by(func.coalesce(Paper.year, 0).desc(), Paper.added_at.desc())
+        elif sort == "progress":
+            stmt = stmt.order_by(Paper.read_progress.desc(), Paper.added_at.desc())
+        else:
+            stmt = stmt.order_by(Paper.added_at.desc())
+
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
 
         result = await db.execute(stmt)
@@ -550,11 +637,6 @@ async def list_papers(
         for paper_data in serialized_papers:
             _sync_memory_store(paper_data)
 
-        # count
-        from sqlalchemy import func
-        count_stmt = select(func.count(Paper.id))
-        if tag:
-            count_stmt = count_stmt.where(Paper.tags.contains(tag))
         total_result = await db.execute(count_stmt)
         total = total_result.scalar() or 0
 
@@ -566,8 +648,15 @@ async def list_papers(
         }
     except Exception as e:
         # 数据库不可用时回退到内存存储
-        papers = list(_papers_store.values())
-        papers.sort(key=lambda p: p.get("added_at", ""), reverse=True)
+        papers = _apply_memory_paper_filters(
+            list(_papers_store.values()),
+            query=query,
+            tag=tag,
+            source=source,
+            indexed=indexed,
+            year=year,
+            sort=sort,
+        )
         return {
             "papers": papers[(page-1)*page_size : page*page_size],
             "total": len(papers),
