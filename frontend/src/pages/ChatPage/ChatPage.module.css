@@ -15,6 +15,17 @@
 .back { color: var(--color-text-secondary); }
 .header h1 { font-size: 20px; }
 
+.scopeBadge {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -95,6 +106,47 @@
   padding: 2px 8px;
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
+}
+
+.eventsPanel {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.eventsToggle {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.eventsList {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eventRow {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 10px;
+  font-size: 12px;
+  align-items: start;
+}
+
+.eventType {
+  color: var(--color-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.eventSummary {
+  color: var(--color-text-tertiary);
+  word-break: break-word;
 }
 
 .sourcesTitle {

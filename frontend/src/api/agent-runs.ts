@@ -1,5 +1,17 @@
 import apiClient from './client'
 
+export interface AgentRunEvent {
+  sequence: number
+  type: string
+  payload: Record<string, any>
+  created_at: string
+}
+
+export interface AgentRunEventsResponse {
+  run_id: string
+  events: AgentRunEvent[]
+}
+
 export interface CreatePaperQARunRequest {
   input: {
     question: string
@@ -21,5 +33,5 @@ export const agentRunsApi = {
       input: data.input,
       context: data.context ?? {},
     }),
-  getEvents: (runId: string) => apiClient.get(`/agent-runs/${runId}/events`),
+  getEvents: (runId: string) => apiClient.get<AgentRunEventsResponse>(`/agent-runs/${runId}/events`),
 }

@@ -1,134 +1,178 @@
-# PDF Reader Agent Harness 重设计方案
+# PDF Reader Agent Harness 设计文档
 
-本文面向“跳槽项目打磨”重新设计 `pdf_reader` 后端。目标不是把现有功能名字堆得更多，而是让项目体现完整的工程能力：Agent 运行时、工具调用、RAG、状态管理、事件流、可观测性、评测和可演示闭环。
+本文基于当前 `pdf_reader` 项目和对话讨论，重新整理 Agent Harness 的设计方向。目标不是把“翻译、检索、对话”重新命名成 Agent，而是把项目升级成一个能体现 Agent 工程能力的论文阅读工作台：有工具调用、有循环控制、有状态、有事件、有引用、有评测。
 
-## 1. 当前问题判断
+## 1. 设计判断
 
-当前项目的基础方向是对的，但作为作品集项目会显得不够扎实，主要问题在这些地方：
+当前项目已经具备论文阅读产品的基础能力：
 
-1. Agent 只是“意图到类的分发”，没有真正的 Agent 运行时。
-2. RAG、搜索、解释、笔记等模块有设计痕迹，但 API 和 Service 没有完整闭环。
-3. PDF 解析结果主要在内存，服务重启后阅读上下文不可恢复。
-4. 上传论文没有自动完成解析、分块、索引、状态更新。
-5. 缺少任务事件流、Trace、工具调用记录，难以展示复杂 Agent 的执行过程。
-6. 缺少评测集和可重复测试，面试时很难证明“效果可靠”。
+- 论文上传、缓存 PDF、数据库持久化
+- PDF 元数据提取、标题与摘要回填
+- 全文翻译、划词翻译
+- 论文画像
+- arXiv 检索、URL 下载入库
+- Paper QA 对话
+- 初版 `agent_harness`、`agent_runs`、`agent_events`
 
-所以重构方向应从“多个 Agent 类”升级为“Agent Harness”。Harness 是统一的任务运行框架，Agent 只是其中一种可插拔策略。
+但从 Agent 项目角度看，核心问题仍然是：
 
-## 2. 新项目定位
+- 很多功能仍是“一次输入 -> 一次调用 -> 一次输出”。
+- `paper_qa` 已有 tool 调用和事件记录，但还不是通用 ReAct / tool loop。
+- 工具注册、错误恢复、上下文压缩、终止条件、评测和 Trace 展示还不完整。
+- 前端已经能展示 QA 和来源，但还没有展示 Agent 的完整执行过程。
 
-推荐把项目定位为：
+因此，下一阶段重点不是继续增加按钮，而是把现有能力放进一个稳定的 Agent Harness 中。
 
-> 面向学术论文阅读的 Agentic Research Workspace：支持论文摄入、结构化解析、混合检索、上下文问答、术语解释、翻译润色、阅读笔记生成，并提供可追踪、可评测的 Agent 运行框架。
+## 2. 核心概念
 
-这个定位比“PDF 阅读器 + 翻译”更适合跳槽项目，因为它能展示：
+### 2.1 Agent 与普通 LLM 功能的区别
 
-- 后端架构设计能力
-- RAG 工程能力
-- Agent 工程能力
-- 异步任务与事件流能力
-- LLM 应用可靠性设计
-- 前后端产品闭环能力
-
-## 3. Harness 核心思想
-
-旧结构：
+普通 LLM 功能通常是：
 
 ```text
-IntentEngine -> AgentOrchestrator -> SomeAgent.execute()
+用户输入 -> 拼 prompt -> LLM 输出
 ```
 
-新结构：
+Agent 应该是：
 
 ```text
-API -> AgentRunService -> AgentHarness -> Planner -> Tool Loop -> Verifier -> Response
-                                      |              |
-                                      |              -> Tools: PDF / RAG / Search / Notes / Translation / LLM
-                                      -> Event Stream / Trace / Run Store / Eval Hooks
+用户目标 -> 规划 / 判断 -> 调工具 -> 观察结果 -> 继续判断 -> 输出
 ```
 
-Agent Harness 要负责这些通用能力：
+也就是说，Agent 的关键不是“有聊天框”，而是它能在多步任务里自己决定下一步动作，并能根据中间结果修正路径。
 
-- 创建一次 `run`
-- 加载上下文
-- 选择 agent profile
-- 规划步骤
-- 调用工具
-- 管理中间状态
-- 生成结构化事件
-- 保存 trace
-- 输出最终结果
-- 支持 replay 和 eval
+### 2.2 Loop Engineering
 
-Agent 本身只负责策略：
-
-- 这个任务该如何思考
-- 可用哪些工具
-- 最终输出格式是什么
-- 如何判断结果是否合格
-
-## 4. 推荐后端目录结构
-
-建议在 `backend/app/services/agent_harness/` 下新建运行时，不要直接在旧 `services/agent/` 上继续堆代码。
+Loop Engineering 是把 ReAct 循环作为工程对象来设计。基础循环很简单：
 
 ```text
-backend/app/
-├── api/
-│   ├── agent_runs.py              # 新 Agent Run API
-│   ├── papers.py
-│   ├── rag.py
-│   └── ...
-├── services/
-│   ├── agent_harness/
-│   │   ├── runtime.py             # AgentHarness 主运行时
-│   │   ├── run_service.py         # 应用层入口，负责 DB / SSE / 权限
-│   │   ├── registry.py            # Agent / Tool 注册中心
-│   │   ├── context.py             # RunContext / PaperContext / UserContext
-│   │   ├── events.py              # 事件模型
-│   │   ├── state.py               # run 状态机
-│   │   ├── planner.py             # 任务规划
-│   │   ├── verifier.py            # 输出校验与引用校验
-│   │   ├── traces.py              # trace 记录与 replay
-│   │   ├── schemas.py             # Pydantic 输入输出协议
-│   │   ├── agents/
-│   │   │   ├── base.py
-│   │   │   ├── paper_qa.py
-│   │   │   ├── deep_read.py
-│   │   │   ├── translate.py
-│   │   │   ├── literature_search.py
-│   │   │   └── note_writer.py
-│   │   └── tools/
-│   │       ├── base.py
-│   │       ├── pdf_tools.py
-│   │       ├── rag_tools.py
-│   │       ├── search_tools.py
-│   │       ├── note_tools.py
-│   │       ├── translation_tools.py
-│   │       └── citation_tools.py
-│   ├── ingestion/
-│   │   ├── pipeline.py            # 论文摄入闭环
-│   │   ├── jobs.py                # 后台任务
-│   │   └── status.py
-│   ├── rag/
-│   ├── pdf/
-│   ├── llm/
-│   └── prompt/
-├── models/
-│   ├── agent_run.py
-│   ├── agent_event.py
-│   ├── paper_chunk.py
-│   ├── citation.py
-│   └── ...
-└── database.py
+LLM decision -> tool call -> observation -> next LLM decision -> final answer
 ```
 
-旧 `services/agent/` 可以先保留，但逐步迁移为 `agent_harness/agents/` 下的 profile。
+但要能稳定运行，需要补齐这些能力：
+
+- 终止条件：最大步数、重复工具调用检测、成本阈值、空结果提前结束。
+- 上下文管理：滑动窗口、历史摘要、工具结果压缩、来源去重。
+- 错误恢复：工具失败后的重试、降级、把错误反馈给 LLM 重新规划。
+- 并发策略：检索类工具可以并行，写入类工具默认串行。
+- 预算控制：token、耗时、工具调用次数都需要可记录和可限制。
+
+### 2.3 Harness
+
+Harness 是包住 Agent loop 的运行环境。它的核心是：
+
+> 让 LLM 的每一步决策，都在可控、可观测、可纠错的边界内执行。
+
+落到工程上就是三件事：
+
+- 约束：工具 schema、权限边界、上下文范围、输出格式。
+- 兜底：超时、重试、降级、失败事件、人工确认。
+- 可见：run、event、trace、tool latency、citation check、eval 指标。
+
+Loop 决定 Agent 如何“思考-行动”，Harness 决定这个过程能不能被信任。
+
+## 3. 当前代码现状
+
+当前已经落地的最小闭环：
+
+```text
+POST /api/agent-runs
+  -> AgentRunService.create_run
+  -> AgentRun(status=running)
+  -> emit run_started
+  -> AgentHarnessRuntime.run
+  -> PaperQAAgent.run
+  -> rag.retrieve
+  -> llm.chat
+  -> citation.verify
+  -> AgentRun(status=completed)
+  -> AgentEvent persist
+  -> response(answer + sources + trace_summary)
+```
+
+对应文件：
+
+| 模块 | 当前职责 |
+| --- | --- |
+| `backend/app/api/agent_runs.py` | 创建 run、查询 run、查询 events |
+| `backend/app/services/agent_harness/run_service.py` | run 生命周期、会话历史、事件持久化 |
+| `backend/app/services/agent_harness/runtime.py` | runtime 入口，按 agent 名称执行 |
+| `backend/app/services/agent_harness/registry.py` | 注册 `paper_qa`、`rag.retrieve`、`citation.verify` |
+| `backend/app/services/agent_harness/agents/paper_qa.py` | 当前 Paper QA 策略 |
+| `backend/app/services/agent_harness/tools/rag_tools.py` | 基于 `paper_chunks` 的最小检索 |
+| `backend/app/services/agent_harness/tools/citation_tools.py` | 最小引用校验 |
+| `backend/app/models/agent_run.py` | run 总记录 |
+| `backend/app/models/agent_event.py` | run 事件记录 |
+
+当前这版已经比普通 QA 多了几个重要特征：
+
+- 有 run ID 和状态。
+- 有 session 维度的短期历史。
+- 有工具事件。
+- 有来源引用。
+- 有 trace summary。
+
+但还缺真正的通用 tool loop。现在 `paper_qa` 是固定顺序：
+
+```text
+retrieve -> answer -> verify
+```
+
+下一步要把它升级成可配置、可终止、可恢复的 loop。
+
+## 4. 目标架构
+
+推荐目标结构：
+
+```text
+API
+  -> AgentRunService
+    -> AgentHarnessRuntime
+      -> AgentProfile
+      -> Planner / Tool Loop
+      -> Tool Registry
+      -> Verifier
+      -> Event Store
+      -> Response
+```
+
+目标目录：
+
+```text
+backend/app/services/agent_harness/
+├── runtime.py
+├── run_service.py
+├── registry.py
+├── context.py
+├── events.py
+├── planner.py
+├── loop.py
+├── verifier.py
+├── traces.py
+├── schemas.py
+├── agents/
+│   ├── base.py
+│   ├── paper_qa.py
+│   ├── deep_read.py
+│   ├── literature_search.py
+│   └── note_writer.py
+└── tools/
+    ├── base.py
+    ├── rag_tools.py
+    ├── citation_tools.py
+    ├── pdf_tools.py
+    ├── search_tools.py
+    ├── translation_tools.py
+    └── note_tools.py
+```
+
+当前已有的 `runtime.py`、`run_service.py`、`registry.py`、`context.py`、`paper_qa.py`、`rag_tools.py`、`citation_tools.py` 可以保留并逐步增强。
 
 ## 5. 核心抽象
 
 ### 5.1 AgentProfile
 
-Agent 不再只是一个类，而是一个 profile：
+后续不要让每个 Agent 只是一个随意实现的类，而应有稳定 profile：
 
 ```python
 class AgentProfile(BaseModel):
@@ -144,26 +188,33 @@ class AgentProfile(BaseModel):
 示例：
 
 ```python
-PaperQAAgent = AgentProfile(
+PaperQAProfile = AgentProfile(
     name="paper_qa",
-    description="基于当前论文或论文库回答问题，必须给出引用",
+    description="基于论文上下文回答问题，必须返回可追溯来源",
     system_prompt_key="agent.paper_qa.system",
-    allowed_tools=[
-        "rag.retrieve",
-        "pdf.get_blocks",
-        "citation.verify",
-        "llm.summarize",
-    ],
+    allowed_tools=["rag.retrieve", "citation.verify"],
     output_schema=PaperQAAnswer,
+    max_steps=4,
     require_citations=True,
 )
 ```
 
-这样面试时可以解释：Agent 是可配置能力单元，Harness 统一管理执行。
-
 ### 5.2 Tool
 
-工具必须有稳定协议，不能让 Agent 直接 import service 随便调用。
+工具需要稳定协议，不应该让 Agent 直接 import service 随意调用。
+
+当前 `BaseTool` 只有：
+
+```python
+class BaseTool(ABC):
+    name: str
+
+    @abstractmethod
+    async def run(self, tool_input: dict, ctx: RunContext) -> dict:
+        ...
+```
+
+下一步建议升级为：
 
 ```python
 class ToolSpec(BaseModel):
@@ -172,171 +223,227 @@ class ToolSpec(BaseModel):
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     timeout_seconds: int = 30
+    retryable: bool = True
 
 
 class BaseTool(ABC):
     spec: ToolSpec
 
     @abstractmethod
-    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+    async def run(self, tool_input: BaseModel, ctx: RunContext) -> BaseModel:
         ...
 ```
 
-推荐第一批工具：
+优先补齐的工具：
 
-| Tool | 职责 |
-| --- | --- |
-| `pdf.parse` | 解析 PDF 并返回结构化页面 / 文本块 |
-| `pdf.get_blocks` | 获取指定论文、页码、章节的文本块 |
-| `rag.index_paper` | 将论文切块并写入检索索引 |
-| `rag.retrieve` | 混合检索相关 chunk |
-| `citation.verify` | 检查回答引用是否能对应到真实 chunk |
-| `translate.text` | 翻译文本并使用术语表 |
-| `search.literature` | 多源论文检索 |
-| `notes.create` | 生成或保存结构化笔记 |
+| Tool | 状态 | 职责 |
+| --- | --- | --- |
+| `rag.retrieve` | 已有最小版 | 从 `paper_chunks` 检索相关 chunk |
+| `citation.verify` | 已有最小版 | 校验来源字段完整性，后续校验引用是否真支持答案 |
+| `pdf.get_blocks` | 待实现 | 获取指定页、章节、选区附近文本块 |
+| `search.literature` | 待实现 | 包装 arXiv / URL 导入 / 后续多源搜索 |
+| `translate.text` | 待实现 | 复用翻译服务，支持术语和上下文 |
+| `notes.create` | 待实现 | 保存结构化阅读笔记 |
 
 ### 5.3 RunContext
 
-所有 Agent 执行共享统一上下文：
+当前 `RunContext` 已经包含：
 
 ```python
 class RunContext(BaseModel):
     run_id: str
-    session_id: str
-    user_id: str | None = None
+    session_id: str = "default"
     paper_id: str | None = None
-    selected_text: str | None = None
-    selected_block_id: str | None = None
     current_page: int | None = None
-    conversation_id: str | None = None
+    selected_text: str | None = None
     metadata: dict = {}
 ```
 
-这样翻译、问答、解释、笔记都能拿到同一套上下文，不需要 API 层到处拼 dict。
+下一步建议补：
+
+```python
+selected_block_id: str | None = None
+user_id: str | None = None
+conversation_id: str | None = None
+budget: RunBudget | None = None
+permissions: dict = {}
+```
+
+这样同一个 harness 可以支撑单论文 QA、跨论文 QA、深读、自动调研。
 
 ### 5.4 AgentEvent
 
-Agent Harness 必须输出事件流。这个是项目高级感的关键。
-
-```python
-class AgentEvent(BaseModel):
-    id: str
-    run_id: str
-    type: Literal[
-        "run_started",
-        "plan_created",
-        "tool_started",
-        "tool_finished",
-        "llm_started",
-        "llm_delta",
-        "citation_checked",
-        "run_finished",
-        "run_failed",
-    ]
-    timestamp: datetime
-    payload: dict
-```
-
-前端可以展示：
-
-- Agent 当前在做什么
-- 调用了哪些工具
-- 检索到了哪些来源
-- 最终引用是否通过校验
-
-这比单纯返回一段文本更有说服力。
-
-## 6. 新核心流程
-
-### 6.1 论文摄入流程
+当前事件类型包括：
 
 ```text
-Upload PDF
-  -> create Paper(status=uploaded)
-  -> enqueue ingestion job
+run_started
+tool_started
+tool_finished
+llm_started
+citation_checked
+run_finished
+run_failed
+```
+
+建议扩展为：
+
+```text
+plan_created
+tool_failed
+llm_finished
+context_compacted
+retry_scheduled
+budget_exceeded
+human_approval_required
+run_cancelled
+```
+
+前端 Trace 面板应该直接消费这些事件。
+
+## 6. 关键流程
+
+### 6.1 论文摄入闭环
+
+当前已经完成大部分闭环：
+
+```text
+Upload / URL Import
+  -> create Paper
+  -> extract title / abstract / pdf_metadata
   -> parse PDF
-  -> persist pages / blocks / sections
-  -> chunk paper
-  -> build BM25 index
-  -> build vector index
-  -> extract terms / citations
-  -> Paper(status=indexed)
+  -> persist paper_blocks
+  -> persist paper_chunks
+  -> mark Paper.is_indexed
 ```
 
-对应状态：
+后续增强：
+
+- 增加 ingestion 状态字段，而不仅是 `is_indexed`。
+- 增加失败原因和可重试入口。
+- chunk 生成后建立 BM25 / vector 双索引。
+- 标题、摘要、作者、年份作为可检索 metadata。
+
+### 6.2 Paper QA 流程
+
+当前流程：
 
 ```text
-uploaded -> parsing -> parsed -> indexing -> indexed -> failed
-```
-
-这条链路必须打通，否则后面的 RAG 和 Agent 都会显得像空架子。
-
-### 6.2 阅读问答流程
-
-```text
-POST /api/agent-runs
-  input: question + paper_id
-  agent: paper_qa
-
-AgentHarness
-  -> load PaperContext
-  -> plan: retrieve -> answer -> verify citations
+question + context
+  -> load conversation history
+  -> load paper title / abstract / ai_summary
   -> rag.retrieve
   -> llm.chat
   -> citation.verify
-  -> persist answer + events
-  -> return run_id + final answer
+  -> save answer and events
 ```
 
-### 6.3 深度阅读流程
-
-深度阅读是最适合作为演示的 Agent 工作流。
-
-输入：当前论文、当前页或选中段落。
-
-输出：
-
-- 中文精读翻译
-- 关键概念解释
-- 方法 / 实验 / 贡献总结
-- 可保存为笔记的结构化结果
-
-流程：
+下一步目标：
 
 ```text
-pdf.get_blocks
+question
+  -> plan_created
+  -> loop step 1: decide retrieve / ask clarification / answer from context
+  -> tool call with retry and timeout
+  -> observation compaction
+  -> loop step N
+  -> citation.verify
+  -> final answer
+```
+
+### 6.3 Deep Read 流程
+
+这是最适合作为“Agent 感”演示的第二个工作流：
+
+```text
+selected_text / current_page
+  -> pdf.get_blocks
   -> translate.text
-  -> rag.retrieve_related_context
-  -> llm.extract_key_terms
-  -> llm.generate_deep_read_note
+  -> rag.retrieve related context
+  -> extract key terms
+  -> generate deep-read note
   -> notes.create
 ```
 
-## 7. 推荐 Agent 设计
+输出应包含：
 
-不要保留现在“6 个按钮对应 6 个 Agent”的设计。建议改成 5 个高价值 Agent。
+- 精读翻译
+- 概念解释
+- 方法 / 实验 / 贡献总结
+- 可继续追问的问题
+- 可保存笔记
 
-| Agent | 面试价值 | 核心能力 |
-| --- | --- | --- |
-| `paper_qa` | RAG + 引用校验 | 当前论文 / 跨论文问答，返回来源 |
-| `deep_read` | 工作流编排 | 翻译、解释、总结、笔记一条链 |
-| `translate` | LLM 产品细节 | 术语一致性、缓存、上下文翻译 |
-| `literature_search` | 外部工具调用 | arXiv / Semantic Scholar / CrossRef 聚合检索 |
-| `research_map` | 高级展示 | 从多篇论文抽取方法、数据集、指标，生成研究脉络 |
+### 6.4 自主文献调研流程
 
-其中 `paper_qa` 和 `deep_read` 必须做扎实，它们最容易打动面试官。
-
-## 8. API 重新设计
-
-保留现有 API，同时新增一组 Agent Run API。
+这是面试展示的高级方向：
 
 ```text
-POST   /api/agent-runs
-GET    /api/agent-runs/{run_id}
-GET    /api/agent-runs/{run_id}/events
-GET    /api/agent-runs/{run_id}/stream
-POST   /api/agent-runs/{run_id}/cancel
-POST   /api/agent-runs/{run_id}/replay
+research question
+  -> plan search strategy
+  -> search.literature
+  -> import selected papers
+  -> retrieve and extract claims
+  -> compare methods / datasets / metrics
+  -> synthesize survey
+  -> cite sources
+```
+
+这个功能天然需要多步计划、工具调用、去重、信息是否足够的判断，比单轮 QA 更能体现 Agent 能力。
+
+## 7. RAG 设计
+
+当前 `rag.retrieve` 是基于 token overlap 的最小版本。它适合最小闭环，但还不够作为长期 RAG 能力。
+
+目标协议：
+
+```python
+class RetrievalScope(BaseModel):
+    paper_id: str | None = None
+    page_range: tuple[int, int] | None = None
+    source_filter: list[str] = []
+
+
+class RetrievedChunk(BaseModel):
+    chunk_id: str
+    paper_id: str
+    paper_title: str
+    page: int
+    section_title: str = ""
+    text: str
+    score: float
+    retriever: str
+```
+
+目标检索链：
+
+```text
+query rewrite
+  -> BM25 top 30
+  -> vector top 30
+  -> metadata filter
+  -> RRF fusion
+  -> optional rerank
+  -> context packing
+```
+
+引用相关字段必须稳定包含：
+
+- `paper_id`
+- `paper_title`
+- `page`
+- `chunk_id`
+- `chunk_text`
+- `relevance_score`
+
+前端来源跳转和引用校验都依赖这些字段。
+
+## 8. API 设计
+
+当前已实现：
+
+```text
+POST /api/agent-runs
+GET  /api/agent-runs/{run_id}
+GET  /api/agent-runs/{run_id}/events
 ```
 
 创建 run：
@@ -346,140 +453,105 @@ POST   /api/agent-runs/{run_id}/replay
   "agent": "paper_qa",
   "input": {
     "question": "这篇论文的核心贡献是什么？",
-    "paper_id": "paper_123"
+    "paper_id": "paper_123",
+    "top_k": 8
   },
   "context": {
+    "session_id": "qa:paper_123",
+    "paper_id": "paper_123",
     "current_page": 3,
     "selected_text": ""
   }
 }
 ```
 
-返回：
-
-```json
-{
-  "run_id": "run_123",
-  "status": "completed",
-  "answer": {
-    "content": "这篇论文的核心贡献包括...",
-    "citations": [
-      {
-        "paper_id": "paper_123",
-        "page": 4,
-        "chunk_id": "chunk_456",
-        "quote": "..."
-      }
-    ]
-  },
-  "trace_summary": {
-    "tool_calls": 3,
-    "llm_calls": 1,
-    "tokens": 3120,
-    "duration_ms": 8500
-  }
-}
-```
-
-## 9. 数据模型补强
-
-建议新增这些表：
+建议后续补：
 
 ```text
-agent_runs
-agent_events
-paper_pages
-paper_blocks
-paper_chunks
-paper_terms
-citations
-conversation_messages
-eval_cases
-eval_runs
+GET  /api/agent-runs/{run_id}/stream
+POST /api/agent-runs/{run_id}/cancel
+POST /api/agent-runs/{run_id}/replay
+POST /api/evals/run
+GET  /api/evals/{eval_run_id}
 ```
 
-核心表职责：
+## 9. 数据模型
+
+已落地：
 
 | 表 | 用途 |
 | --- | --- |
-| `agent_runs` | 一次 Agent 执行的总记录 |
-| `agent_events` | 工具调用、LLM 调用、状态变化事件 |
-| `paper_blocks` | 持久化 PDF 解析块，替代纯内存缓存 |
-| `paper_chunks` | RAG 检索 chunk |
-| `citations` | 回答引用和 chunk 的对应关系 |
+| `papers` | 论文基础信息、标题摘要、来源、索引状态 |
+| `paper_blocks` | PDF 解析块 |
+| `paper_chunks` | RAG chunk |
+| `translation_caches` | 翻译缓存 |
+| `agent_runs` | 一次 Agent 执行 |
+| `agent_events` | Agent 执行事件 |
+
+建议新增：
+
+| 表 | 用途 |
+| --- | --- |
+| `paper_terms` | 术语、缩写、定义 |
+| `citations` | 回答引用和 chunk 的强绑定关系 |
+| `notes` | 用户保存的深读笔记 |
 | `eval_cases` | 固定评测问题 |
-| `eval_runs` | 评测结果和指标 |
+| `eval_runs` | 评测执行结果 |
+| `saved_views` | 知识库筛选视图 |
 
-## 10. RAG 重新设计
+## 10. 前端设计
 
-当前 RAG 代码应收敛为一个稳定协议：
+当前前端已经完成这些改造：
 
-```python
-class RAGService:
-    async def index_paper(self, paper_id: str) -> IndexResult:
-        ...
+- 阅读页三栏布局：原文、全文翻译、工具栏。
+- 工具栏支持论文画像、全文翻译、划词翻译、Paper QA。
+- Paper QA 改为对话形式，输入框在底部，支持回车发送。
+- 选中文本不直接提交，而是包裹进输入框由用户确认。
+- 搜索页支持 arXiv 搜索、分页、滚动、URL 自动入库。
+- 知识库页改为管理台式布局，支持检索、筛选、排序、分组、分页。
 
-    async def retrieve(
-        self,
-        query: str,
-        scope: RetrievalScope,
-        top_k: int = 8,
-    ) -> list[RetrievedChunk]:
-        ...
-
-    async def answer(
-        self,
-        question: str,
-        scope: RetrievalScope,
-        require_citations: bool = True,
-    ) -> RAGAnswer:
-        ...
-```
-
-检索策略：
+下一步前端重点是 Agent Trace：
 
 ```text
-query rewrite
-  -> BM25 top 30
-  -> vector top 30
-  -> section / paper filters
-  -> RRF fusion
-  -> optional rerank
-  -> context packing
+Agent 面板
+  -> 当前问题
+  -> plan
+  -> tool calls
+  -> retrieved sources
+  -> citation check
+  -> final answer
 ```
 
-输出必须包含：
+推荐把 Trace 放在阅读页第三栏的 Paper QA 面板里：
 
-- `chunk_id`
-- `paper_id`
-- `page`
-- `section_title`
-- `score`
-- `text`
-
-没有这些字段，引用校验和前端来源跳转都做不稳。
+- 默认展示对话。
+- 展开“执行过程”后显示 run events。
+- 来源引用可以点击跳转到 PDF 页和选词翻译上下文。
+- 失败时展示 tool error 和可重试按钮。
 
 ## 11. Prompt 与输出协议
 
-Prompt 不应只作为字符串模板存在。建议每个 Agent 配套：
-
-- system prompt
-- tool policy
-- output schema
-- verifier
-- eval cases
-
-例如 `paper_qa`：
+Prompt 不要散落在代码字符串里。建议每个 Agent 配套：
 
 ```text
 prompts/
 ├── paper_qa.system.md
+├── paper_qa.tool_policy.md
 ├── paper_qa.answer_schema.json
 ├── paper_qa.verifier.md
 └── paper_qa.eval.yaml
 ```
 
-输出统一结构：
+`paper_qa` 输出应稳定为：
+
+```python
+class PaperQAAnswer(BaseModel):
+    content: str
+    sources: list[PaperQASource]
+    trace_summary: dict
+```
+
+后续可扩展：
 
 ```python
 class CitedAnswer(BaseModel):
@@ -489,27 +561,33 @@ class CitedAnswer(BaseModel):
     limitations: list[str] = []
 ```
 
-这能避免 LLM 随便输出一大段无法消费的文本。
-
 ## 12. 可观测性与评测
-
-作为跳槽项目，建议必须做一个简单但真实的评测面板。
 
 ### 12.1 Trace
 
-每次 Agent run 展示：
+每次 Agent run 应展示：
 
-- 使用哪个 Agent
-- 规划了哪些步骤
-- 调用了哪些工具
+- Agent 名称
+- run 状态
+- 事件数量
+- 工具调用次数
+- LLM 调用次数
 - 每个工具耗时
-- LLM token 用量
 - 检索来源
-- 引用校验结果
+- citation verify 结果
+- 错误与重试记录
+
+当前 `trace_summary` 已有 `event_count`、`tool_calls`、`llm_calls`。后续应补：
+
+- `duration_ms`
+- `token_usage`
+- `tool_latency_ms`
+- `citation_pass_rate`
+- `retrieval_empty_rate`
 
 ### 12.2 Eval
 
-先做 10 个固定问题即可：
+先做 10 个固定问题，不需要一开始复杂：
 
 ```yaml
 - id: qa_contribution
@@ -519,138 +597,161 @@ class CitedAnswer(BaseModel):
     - section: "Introduction"
     - section: "Conclusion"
   checks:
+    - answer_not_empty
     - has_citation
     - cites_existing_chunk
-    - answer_not_empty
 ```
 
-评测指标不需要一开始很复杂，先做：
+最小指标：
 
+- 回答非空率
 - 是否有引用
-- 引用是否存在
-- 回答是否为空
-- 检索 top-k 是否命中目标章节
+- 引用是否对应真实 chunk
+- 平均工具调用次数
 - 平均耗时
 - 平均 token
 
-这已经能明显拉开和普通 Demo 的差距。
+## 13. 框架策略
 
-## 13. 前端展示建议
+结合对话里的学习目标，建议路线是：
 
-前端不需要大改成花哨页面，重点做一个“Agent 执行过程可见”的工作台。
+1. 先手写 ReAct / tool loop。
+2. 用项目里的论文 Agent 打磨 harness、tool、trace、eval。
+3. 再学习 LangGraph，并把同一个 workflow 映射成 graph。
 
-推荐三个主视图：
+原因：
 
-| 视图 | 价值 |
-| --- | --- |
-| 阅读工作台 | 左 PDF，右 Agent 面板，支持选中文本深读 |
-| Agent Trace | 展示 run 过程、工具调用、来源引用 |
-| Evaluation | 展示固定评测问题和运行结果 |
+- 手写能讲清楚底层：工具 schema、循环、终止、错误恢复、上下文管理。
+- LangGraph 适合后续做复杂状态机、可视化调试、checkpoint、replay。
+- 面试时“我从零实现过 harness，再用 LangGraph 做生产化迁移”比单纯调用框架更有说服力。
 
-阅读页右侧 Agent 面板可以显示：
+CrewAI、AutoGen、OpenAI Agents SDK 可以了解，但这个项目的主线不建议一开始依赖它们。
 
-```text
-用户问题
-Agent plan
-Tool calls
-Retrieved sources
-Final answer
-Save as note
-```
+## 14. 分阶段路线
 
-这个展示方式比“聊天框返回一句话”更工程化。
+### Phase 0：已完成的基础闭环
 
-## 14. 分阶段落地路线
+状态：基本完成。
 
-### Phase 1：打通论文摄入闭环
+- PDF 上传和缓存。
+- PDF 元数据、标题、摘要提取。
+- 论文摄入、blocks、chunks 持久化。
+- 全文翻译、划词翻译、翻译缓存。
+- 论文画像。
+- arXiv 搜索、URL 导入。
+- 知识库管理页。
+- `paper_qa` 最小 agent run。
+- `agent_runs` / `agent_events`。
 
-目标：上传 PDF 后可以稳定查询文本块和 RAG chunk。
+### Phase 1：加固 Paper QA Harness
 
-任务：
-
-- 新增 `paper_blocks` / `paper_chunks` 表
-- 上传后触发 ingestion pipeline
-- PDF 解析结果持久化
-- RAG index 接口签名统一
-- `Paper.is_indexed` 和状态字段真实更新
-
-验收：
-
-- 上传 PDF 后，刷新服务仍能读取 blocks
-- RAG retrieve 能返回带页码和 chunk_id 的结果
-
-### Phase 2：建立 Agent Harness 最小闭环
-
-目标：用 `paper_qa` 跑通一次完整 run。
+目标：让 `paper_qa` 从固定流程升级为可观测、可恢复的最小 Agent loop。
 
 任务：
 
-- 新增 `AgentHarness`
-- 新增 `ToolRegistry`
-- 新增 `AgentRun` / `AgentEvent` 模型
-- 实现 `rag.retrieve` 和 `citation.verify` 两个工具
-- 新增 `/api/agent-runs`
+- 引入 `AgentProfile`。
+- 引入 `ToolSpec` 和输入输出 schema。
+- 为工具增加 timeout、错误事件、重试策略。
+- 为 run 增加 `duration_ms`、token 统计、工具耗时。
+- 前端展示 events。
 
 验收：
 
-- 提问后能看到事件流
-- 最终回答带真实引用
-- 数据库中保存 run 和 events
+- 一次 QA 可以看到完整 run events。
+- 工具失败不会导致 ASGI 崩溃。
+- 回答有来源，来源字段可跳转。
 
-### Phase 3：实现 Deep Read 工作流
+### Phase 2：改造 RAG
 
-目标：选中一段论文文本，生成可保存的深读笔记。
+目标：让引用质量足以支撑论文问答。
 
 任务：
 
-- 实现 `deep_read` agent
-- 接入 `translate.text`
-- 接入 `notes.create`
-- 输出结构化深读笔记
+- BM25 检索从当前 token overlap 升级为稳定服务。
+- 加 vector retrieve。
+- 做 RRF fusion。
+- 做 context packing。
+- citation verify 从字段检查升级为 chunk 支持性检查。
 
 验收：
 
-- 前端选中文本后可触发深读
-- 输出包含翻译、术语解释、方法总结、延伸问题
-- 可以一键保存为笔记
+- 固定 QA 问题能命中正确章节。
+- 引用不存在时能明确拒答或说明信息不足。
 
-### Phase 4：补评测与展示
+### Phase 3：Deep Read Agent
 
-目标：让项目变成能讲清楚可靠性的作品。
+目标：做出最能体现产品价值的阅读型 Agent。
 
 任务：
 
-- 新增 eval cases
-- 新增 eval runner
-- 新增 trace 页面
-- 新增 token / latency / citation pass rate 统计
+- `pdf.get_blocks`
+- `translate.text`
+- `rag.retrieve_related_context`
+- `notes.create`
+- 结构化 deep read 输出
 
 验收：
 
-- 可以一键跑 10 个评测问题
-- 能看到每次 run 的工具调用与引用校验结果
+- 用户选中文本后生成精读结果。
+- 输出包含翻译、概念解释、方法总结、延伸问题。
+- 可以保存笔记。
+
+### Phase 4：自主文献调研 Agent
+
+目标：体现多步计划和外部工具调用能力。
+
+任务：
+
+- `literature_search` profile。
+- 多关键词检索策略。
+- 搜索结果去重。
+- 自动导入候选论文。
+- 多论文比较与综述生成。
+
+验收：
+
+- 用户输入研究问题后，Agent 能规划检索词并返回带引用综述。
+- 前端展示检索、筛选、抽取、写作过程。
+
+### Phase 5：Eval 与展示
+
+目标：让项目可量化、可回放、可面试演示。
+
+任务：
+
+- `eval_cases`
+- `eval_runs`
+- Agent Trace 页面
+- 指标面板
+
+验收：
+
+- 一键跑固定评测。
+- 能展示工具调用成功率、引用通过率、平均耗时。
 
 ## 15. 面试讲法
 
-你可以这样介绍这个项目：
+可以这样介绍：
 
-> 我把它设计成一个面向论文阅读的 Agent Harness，而不是普通聊天应用。核心是把 Agent 执行抽象成 run，每次 run 都有上下文、工具调用、事件流、trace 和引用校验。RAG 不是简单拼 prompt，而是通过 PDF 结构化解析、chunk 持久化、混合检索、引用验证来保证回答可追溯。前端不仅展示答案，还展示 Agent 的执行过程和评测结果。
+> 这个项目不是简单的论文聊天应用。我把论文阅读能力收敛到一个 Agent Harness：每次任务都是 run，run 有上下文、工具调用、事件流、来源引用和 trace summary。当前已经实现了 Paper QA 的最小闭环，包括 RAG 检索、LLM 回答、引用校验和事件持久化。下一步会把固定流程升级成通用 tool loop，加上 timeout、重试、上下文压缩和评测，让它从 demo 变成可观察、可纠错、可评估的 Agent 系统。
 
-这个讲法能覆盖：
+重点可讲：
 
-- Agent runtime
-- Tool calling
-- RAG
-- Observability
-- Evaluation
-- Product thinking
+- 为什么 Agent 不等于聊天框。
+- Harness 的核心是约束、兜底、可见。
+- Loop Engineering 解决终止、上下文、错误恢复、预算。
+- RAG 为什么需要持久化 chunk 和 citation verify。
+- 前端为什么要展示 Trace，而不只是最终答案。
 
-## 16. 近期最值得做的 5 件事
+## 16. 近期优先级
 
-1. 修正 RAG API 和 RAGService 的接口漂移。
-2. 上传 PDF 后自动解析并持久化 `paper_blocks`。
-3. 新建 `agent_runs` 和 `agent_events`，先跑通 `paper_qa`。
-4. 给回答增加真实 citation，做最小引用校验。
-5. 前端加一个 Agent Trace 面板，把工具调用过程展示出来。
+接下来最值得做的 6 件事：
 
-只要这 5 件事完成，项目质感会明显提升。
+1. 给 `BaseTool` 增加 `ToolSpec`、timeout、输入输出 schema。
+2. 给 `AgentRunService` 记录工具耗时、run 耗时、错误类型。
+3. 把 `paper_qa` 改成 profile + loop 的形式。
+4. 前端 Paper QA 面板增加 run event 展示。
+5. 把 `rag.retrieve` 从 token overlap 升级为 BM25 + vector 混合检索。
+6. 建立 10 条最小 eval cases，统计引用通过率和回答非空率。
+
+完成这些以后，这个项目就能从“功能型论文阅读器”升级成一个可以讲深的 Agent 工程项目。

@@ -8,6 +8,7 @@ class PaperQASource(BaseModel):
     paper_id: str
     paper_title: str
     page: int
+    chunk_id: str | None = None
     chunk_text: str
     relevance_score: float
 

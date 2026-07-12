@@ -49,3 +49,13 @@ def _apply_lightweight_migrations(sync_conn):
         for column, sql in migrations.items():
             if column not in paper_columns:
                 sync_conn.execute(text(sql))
+
+    if "agent_runs" in tables:
+        agent_run_columns = {column["name"] for column in inspector.get_columns("agent_runs")}
+        migrations = {
+            "error_type": "ALTER TABLE agent_runs ADD COLUMN error_type VARCHAR(100) DEFAULT ''",
+            "duration_ms": "ALTER TABLE agent_runs ADD COLUMN duration_ms INTEGER DEFAULT 0",
+        }
+        for column, sql in migrations.items():
+            if column not in agent_run_columns:
+                sync_conn.execute(text(sql))

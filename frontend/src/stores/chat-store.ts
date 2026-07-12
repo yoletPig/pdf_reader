@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+import { AgentRunEvent } from '../api/agent-runs'
+
 interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -15,7 +17,13 @@ interface Message {
     event_count?: number
     tool_calls?: number
     llm_calls?: number
+    tool_failures?: number
+    duration_ms?: number
+    token_usage?: {
+      total_tokens?: number
+    }
   }
+  events?: AgentRunEvent[]
   timestamp: number
 }
 

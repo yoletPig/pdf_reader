@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '../../stores/chat-store'
-import { agentRunsApi } from '../../api/agent-runs'
+import { AgentRunEvent, agentRunsApi } from '../../api/agent-runs'
 import { papersApi, Paper } from '../../api/papers'
 import styles from './ChatPage.module.css'
 
@@ -12,12 +12,41 @@ function getQaSessionKey(scope: string) {
   return `pdf-reader:${scope}:qa-session`
 }
 
+function formatEventSummary(event: AgentRunEvent) {
+  const payload = event.payload || {}
+  switch (event.type) {
+    case 'plan_created':
+      return `steps: ${(payload.steps || []).join(' -> ')}`
+    case 'tool_started':
+      return `${payload.tool} attempt ${payload.attempt || 1}`
+    case 'tool_finished':
+      return `${payload.tool} ${payload.duration_ms || 0}ms`
+    case 'tool_failed':
+      return `${payload.tool} ${payload.error_type || 'Error'}`
+    case 'retry_scheduled':
+      return `${payload.tool} retry ${payload.next_attempt || ''}`.trim()
+    case 'llm_started':
+      return `${payload.model || 'default'} ${payload.message_count || 0} msgs`
+    case 'llm_finished':
+      return `${payload.model || 'default'} ${payload.duration_ms || 0}ms / ${payload.usage?.total_tokens || 0} tokens`
+    case 'citation_checked':
+      return `${payload.valid || 0}/${payload.total || 0} valid`
+    case 'run_finished':
+    case 'run_failed':
+      return `${payload.duration_ms || 0}ms`
+    default:
+      return Object.entries(payload).slice(0, 2).map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
+  }
+}
+
 export default function ChatPage() {
   const [input, setInput] = useState('')
   const [papers, setPapers] = useState<Paper[]>([])
   const [selectedPaperId, setSelectedPaperId] = useState('')
   const [qaSessionId, setQaSessionId] = useState('')
+  const [expandedRuns, setExpandedRuns] = useState<Record<string, boolean>>({})
   const { messages, isStreaming, addMessage, setStreaming, clearMessages } = useChatStore()
+  const scopeLabel = useMemo(() => selectedPaperId ? '单论文' : '跨论文', [selectedPaperId])
 
   useEffect(() => {
     papersApi.list().then(res => setPapers(res.data.papers || [])).catch(console.error)
@@ -51,6 +80,15 @@ export default function ChatPage() {
         },
       })
       const data = res.data as any
+      let events: AgentRunEvent[] = []
+      if (data.run_id) {
+        try {
+          const eventsRes = await agentRunsApi.getEvents(data.run_id)
+          events = eventsRes.data.events || []
+        } catch (eventErr) {
+          console.error(eventErr)
+        }
+      }
       addMessage({
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -58,6 +96,7 @@ export default function ChatPage() {
         content: data.answer?.content || '抱歉，无法回答这个问题。',
         sources: data.answer?.sources || [],
         traceSummary: data.answer?.trace_summary,
+        events,
         timestamp: Date.now(),
       })
     } catch (err) {
@@ -77,6 +116,7 @@ export default function ChatPage() {
       <header className={styles.header}>
         <a href="/" className={styles.back}>← 返回</a>
         <h1>💬 跨论文问答</h1>
+        <span className={styles.scopeBadge}>{scopeLabel}</span>
       </header>
 
       <main className={styles.messages}>
@@ -106,6 +146,29 @@ export default function ChatPage() {
                   <span>events {msg.traceSummary.event_count || 0}</span>
                   <span>tools {msg.traceSummary.tool_calls || 0}</span>
                   <span>llm {msg.traceSummary.llm_calls || 0}</span>
+                  <span>{msg.traceSummary.duration_ms || 0}ms</span>
+                  <span>tokens {msg.traceSummary.token_usage?.total_tokens || 0}</span>
+                </div>
+              ) : null}
+              {msg.runId && msg.events && msg.events.length > 0 ? (
+                <div className={styles.eventsPanel}>
+                  <button
+                    type="button"
+                    className={styles.eventsToggle}
+                    onClick={() => setExpandedRuns((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
+                  >
+                    {expandedRuns[msg.runId] ? '隐藏执行过程' : '查看执行过程'}
+                  </button>
+                  {expandedRuns[msg.runId] ? (
+                    <div className={styles.eventsList}>
+                      {msg.events.map((event) => (
+                        <div key={`${msg.runId}-${event.sequence}`} className={styles.eventRow}>
+                          <span className={styles.eventType}>{event.type}</span>
+                          <span className={styles.eventSummary}>{formatEventSummary(event)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>

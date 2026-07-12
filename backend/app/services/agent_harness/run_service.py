@@ -1,6 +1,7 @@
 """Agent Run 应用服务"""
 import json
 from datetime import datetime
+from statistics import mean
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,10 @@ from app.services.llm import llm_router
 
 
 class AgentRunService:
+    def _duration_ms(self, run: AgentRun) -> int:
+        end_time = run.completed_at or datetime.utcnow()
+        return max(int((end_time - run.created_at).total_seconds() * 1000), 0)
+
     async def _load_conversation_history(
         self,
         db: AsyncSession,
@@ -92,7 +97,7 @@ class AgentRunService:
             await db.commit()
 
         try:
-            await emit("run_started", {"agent": agent_name})
+            await emit("run_started", {"agent": agent_name, "session_id": run.session_id})
             registry = HarnessRegistry(db)
             runtime = AgentHarnessRuntime(llm_router=llm_router, registry=registry, emit_event=emit)
             runtime.default_model_name = await self._get_default_model_name(db)
@@ -115,25 +120,36 @@ class AgentRunService:
             )
             result = await runtime.run(agent_name, agent_input, ctx)
 
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            run.duration_ms = self._duration_ms(run)
+            await db.commit()
+            await emit("run_finished", {"status": run.status, "duration_ms": run.duration_ms})
+
             trace_summary = await self._build_trace_summary(db, run.id)
             answer = PaperQAAnswer(
                 content=result["content"],
                 sources=result.get("sources", []),
                 trace_summary=trace_summary,
             )
-
-            run.status = "completed"
             run.output_json = answer.model_dump_json()
-            run.completed_at = datetime.utcnow()
             await db.commit()
-            await emit("run_finished", {"status": run.status})
             return AgentRunResponse(run_id=run.id, agent=agent_name, status=run.status, answer=answer)
         except Exception as exc:
             run.status = "failed"
             run.error_message = str(exc)
+            run.error_type = type(exc).__name__
             run.completed_at = datetime.utcnow()
+            run.duration_ms = self._duration_ms(run)
             await db.commit()
-            await emit("run_failed", {"error": str(exc)})
+            await emit(
+                "run_failed",
+                {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "duration_ms": run.duration_ms,
+                },
+            )
             raise
 
     async def get_run(self, db: AsyncSession, run_id: str) -> AgentRunResponse | None:
@@ -169,10 +185,53 @@ class AgentRunService:
 
     async def _build_trace_summary(self, db: AsyncSession, run_id: str) -> dict:
         events = await self.list_events(db, run_id)
+        run = (
+            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+        ).scalar_one_or_none()
+        tool_finished_events = [event for event in events if event["type"] == "tool_finished"]
+        tool_failed_events = [event for event in events if event["type"] == "tool_failed"]
+        llm_finished_events = [event for event in events if event["type"] == "llm_finished"]
+        tool_latency_by_name: dict[str, list[int]] = {}
+        for event in tool_finished_events:
+            payload = event["payload"]
+            tool_name = payload.get("tool", "unknown")
+            tool_latency_by_name.setdefault(tool_name, []).append(int(payload.get("duration_ms", 0)))
+
+        token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for event in llm_finished_events:
+            usage = event["payload"].get("usage") or {}
+            token_usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)
+            token_usage["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)
+            token_usage["total_tokens"] += int(usage.get("total_tokens", 0) or 0)
+
+        citation_events = [event for event in events if event["type"] == "citation_checked"]
+        citation_payload = citation_events[-1]["payload"] if citation_events else {}
+        citation_total = int(citation_payload.get("total", 0) or 0)
+        citation_valid = int(citation_payload.get("valid", 0) or 0)
+
         return {
             "event_count": len(events),
-            "tool_calls": len([event for event in events if event["type"] == "tool_finished"]),
-            "llm_calls": len([event for event in events if event["type"] == "llm_started"]),
+            "tool_calls": len(tool_finished_events),
+            "tool_failures": len(tool_failed_events),
+            "llm_calls": len(llm_finished_events),
+            "duration_ms": run.duration_ms if run else 0,
+            "token_usage": token_usage,
+            "tool_latency_ms": {
+                tool_name: {
+                    "count": len(latencies),
+                    "avg": int(mean(latencies)),
+                    "max": max(latencies),
+                }
+                for tool_name, latencies in tool_latency_by_name.items()
+            },
+            "error_types": sorted(
+                {
+                    event["payload"].get("error_type")
+                    for event in events
+                    if event["payload"].get("error_type")
+                }
+            ),
+            "citation_pass_rate": round(citation_valid / citation_total, 4) if citation_total else None,
         }
 
     async def _get_default_model_name(self, db: AsyncSession) -> str:
