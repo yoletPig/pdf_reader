@@ -27,10 +27,11 @@ class Settings(BaseSettings):
     VECTOR_DB_PATH: str = "./data/vectors"
 
     # Embedding
-    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    EMBEDDING_PROVIDER: str = "local_api"  # local_api / local_hash
+    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
     EMBEDDING_DEVICE: str = "cpu"
     EMBEDDING_API_KEY: Optional[str] = None
-    EMBEDDING_API_URL: Optional[str] = None
+    EMBEDDING_API_URL: Optional[str] = "http://127.0.0.1:8001/v1/embeddings"
 
     # 单模型 LLM 配置
     LLM_MODEL: str = "gpt-4o-mini"

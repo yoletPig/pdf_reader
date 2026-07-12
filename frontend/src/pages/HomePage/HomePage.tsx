@@ -49,6 +49,7 @@ export default function HomePage() {
   const [indexFilter, setIndexFilter] = useState<IndexFilter>('all')
   const [sortMode, setSortMode] = useState<SortMode>('recent')
   const [groupMode, setGroupMode] = useState<GroupMode>('all')
+  const [reindexingId, setReindexingId] = useState('')
 
   const fetchPapers = async (page: number, query = appliedQuery, source = sourceFilter, indexedState = indexFilter, sort = sortMode) => {
     setLoading(true)
@@ -107,6 +108,21 @@ export default function HomePage() {
       void fetchPapers(currentPage)
     } catch (err) {
       console.error('删除失败:', err)
+    }
+  }
+
+  const handleReindex = async (event: React.MouseEvent, paperId: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setReindexingId(paperId)
+    try {
+      await papersApi.reindex(paperId)
+      await fetchPapers(currentPage)
+    } catch (err: any) {
+      console.error('重建索引失败:', err)
+      alert(err?.response?.data?.detail || '重建索引失败，请稍后重试')
+    } finally {
+      setReindexingId('')
     }
   }
 
@@ -295,6 +311,15 @@ export default function HomePage() {
                             </button>
                             <div className={styles.paperActions}>
                               <button className={styles.openBtn} onClick={() => navigate(`/reader/${paper.id}`)}>打开</button>
+                              {!paper.is_indexed ? (
+                                <button
+                                  className={styles.reindexBtn}
+                                  onClick={(event) => void handleReindex(event, paper.id)}
+                                  disabled={reindexingId === paper.id}
+                                >
+                                  {reindexingId === paper.id ? '重建中...' : '重建索引'}
+                                </button>
+                              ) : null}
                               <button className={styles.deleteBtn} onClick={(event) => void handleDelete(event, paper.id)}>删除</button>
                             </div>
                           </div>
@@ -310,6 +335,9 @@ export default function HomePage() {
                             {paper.page_count ? <span>{paper.page_count} 页</span> : null}
                             <span>{formatDate(paper.added_at)}</span>
                             {paper.is_indexed ? <span className={styles.goodChip}>已索引</span> : <span>待索引</span>}
+                            {!paper.is_indexed && paper.reader_profile?.indexing_status === 'failed' ? (
+                              <span className={styles.warnChip}>索引失败</span>
+                            ) : null}
                           </div>
 
                           <div className={styles.progressBlock}>
@@ -320,6 +348,9 @@ export default function HomePage() {
                             <div className={styles.progressTrack}>
                               <div className={styles.progressBar} style={{ width: `${progressPercent(paper)}%` }} />
                             </div>
+                            {!paper.is_indexed && paper.reader_profile?.indexing_error ? (
+                              <p className={styles.indexError}>{String(paper.reader_profile.indexing_error)}</p>
+                            ) : null}
                           </div>
                         </div>
                       </article>

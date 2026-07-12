@@ -32,6 +32,16 @@ export interface UploadResponse {
   paper: Paper
 }
 
+export interface ReindexPaperResponse {
+  paper: Paper
+  ingestion: {
+    paper_id: string
+    blocks: number
+    chunks: number
+    is_indexed: boolean
+  }
+}
+
 export interface PaperListParams {
   page?: number
   page_size?: number
@@ -54,6 +64,7 @@ export const papersApi = {
     apiClient.post<UploadResponse>('/papers/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  reindex: (id: string) => apiClient.post<ReindexPaperResponse>(`/papers/${id}/reindex`),
   delete: (id: string) => apiClient.delete(`/papers/${id}`),
   getFileUrl: (id: string) => `/api/papers/${id}/file`,
   getBlocks: (id: string, page?: number) =>

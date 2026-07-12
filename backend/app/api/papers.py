@@ -19,6 +19,7 @@ from app.models.paper_block import PaperBlock
 from app.models.paper_chunk import PaperChunk
 from app.models.translation_cache import TranslationCache
 from app.services.ingestion import paper_ingestion_service
+from app.services.ingestion import vector_index_service
 from app.services.llm import LLMMessage, LLMRequest, llm_router
 
 router = APIRouter(prefix="/api/papers", tags=["论文管理"])
@@ -66,6 +67,23 @@ def _merge_reader_profile(paper: Paper, updates: dict) -> dict:
     merged = {**current, **updates}
     paper.reader_profile_json = json.dumps(merged, ensure_ascii=False)
     return merged
+
+
+def _index_profile_updates(
+    *,
+    status: str,
+    error: str = "",
+    blocks: int = 0,
+    chunks: int = 0,
+    indexed_at: str | None = None,
+) -> dict:
+    return {
+        "indexing_status": status,
+        "indexing_error": error,
+        "indexed_block_count": blocks,
+        "indexed_chunk_count": chunks,
+        "last_indexed_at": indexed_at,
+    }
 
 
 def _sync_memory_store(paper_data: dict):
@@ -374,6 +392,7 @@ async def create_paper_from_pdf_bytes(
         "translated_pages": 0,
         "failed_pages": [],
         "last_summary_refresh_at": None,
+        **_index_profile_updates(status="pending"),
     }
 
     paper_data = {
@@ -421,11 +440,81 @@ async def create_paper_from_pdf_bytes(
         ingestion_result = await paper_ingestion_service.ingest(paper, db)
         paper_data["is_indexed"] = ingestion_result["is_indexed"]
         paper_data["file_path"] = paper.file_path
-    except Exception:
-        pass
+        paper_data["reader_profile"] = {
+            **paper_data["reader_profile"],
+            **_index_profile_updates(
+                status="ready" if ingestion_result["is_indexed"] else "empty",
+                error="",
+                blocks=ingestion_result["blocks"],
+                chunks=ingestion_result["chunks"],
+                indexed_at=datetime.utcnow().isoformat(),
+            ),
+        }
+        paper.reader_profile_json = json.dumps(paper_data["reader_profile"], ensure_ascii=False)
+        await db.commit()
+    except Exception as exc:
+        paper_data["reader_profile"] = {
+            **paper_data["reader_profile"],
+            **_index_profile_updates(
+                status="failed",
+                error=str(exc)[:500],
+            ),
+        }
+        try:
+            result = await db.execute(select(Paper).where(Paper.id == paper_id))
+            existing_paper = result.scalar_one_or_none()
+            if existing_paper:
+                existing_paper.reader_profile_json = json.dumps(paper_data["reader_profile"], ensure_ascii=False)
+                await db.commit()
+        except Exception:
+            pass
 
     _sync_memory_store(paper_data)
     return paper_data
+
+
+async def _reindex_paper(db: AsyncSession, paper: Paper) -> dict:
+    profile = _merge_reader_profile(paper, _index_profile_updates(status="running", error=""))
+    paper.is_indexed = False
+    await db.commit()
+
+    try:
+        ingestion_result = await paper_ingestion_service.ingest(paper, db)
+        profile = _merge_reader_profile(
+            paper,
+            _index_profile_updates(
+                status="ready" if ingestion_result["is_indexed"] else "empty",
+                error="",
+                blocks=ingestion_result["blocks"],
+                chunks=ingestion_result["chunks"],
+                indexed_at=datetime.utcnow().isoformat(),
+            ),
+        )
+        paper.is_indexed = ingestion_result["is_indexed"]
+        await db.commit()
+        await db.refresh(paper)
+        paper_data = _paper_to_dict(paper)
+        paper_data["reader_profile"] = profile
+        _sync_memory_store(paper_data)
+        return {
+            "paper": paper_data,
+            "ingestion": ingestion_result,
+        }
+    except Exception as exc:
+        profile = _merge_reader_profile(
+            paper,
+            _index_profile_updates(
+                status="failed",
+                error=str(exc)[:500],
+            ),
+        )
+        paper.is_indexed = False
+        await db.commit()
+        await db.refresh(paper)
+        paper_data = _paper_to_dict(paper)
+        paper_data["reader_profile"] = profile
+        _sync_memory_store(paper_data)
+        raise HTTPException(status_code=500, detail=f"重建索引失败: {str(exc)[:300]}")
 
 
 async def _load_paper_or_404(db: AsyncSession, paper_id: str) -> Paper:
@@ -744,6 +833,18 @@ async def update_reader_profile(
         raise
 
 
+@router.post("/{paper_id}/reindex")
+async def reindex_paper(
+    paper_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """重建论文 blocks/chunks 索引。"""
+    paper = await _load_paper_or_404(db, paper_id)
+    if not paper.file_path or not os.path.exists(paper.file_path):
+        raise HTTPException(status_code=404, detail="PDF 文件不存在，无法重建索引")
+    return await _reindex_paper(db, paper)
+
+
 @router.post("/{paper_id}/reader-profile/refresh")
 async def refresh_reader_profile(
     paper_id: str,
@@ -770,6 +871,7 @@ async def refresh_reader_profile(
     paper.ai_summary_md = summary_md
 
     await db.commit()
+    await paper_ingestion_service.rebuild_vector_index(paper, db)
     await db.refresh(paper)
 
     paper_data = _paper_to_dict(paper)
@@ -791,6 +893,7 @@ async def delete_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
 
     # 删除数据库记录
     try:
+        vector_index_service.delete_paper(paper_id)
         await db.execute(delete(PaperBlock).where(PaperBlock.paper_id == paper_id))
         await db.execute(delete(PaperChunk).where(PaperChunk.paper_id == paper_id))
         result = await db.execute(select(Paper).where(Paper.id == paper_id))

@@ -50,6 +50,7 @@ class PDFPage:
     blocks: list[PDFBlock] = field(default_factory=list)
     tables: list[PDFTable] = field(default_factory=list)
     text: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass

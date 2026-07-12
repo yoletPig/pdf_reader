@@ -60,6 +60,7 @@
 .secondaryAction,
 .ghostAction,
 .openBtn,
+.reindexBtn,
 .deleteBtn,
 .pageBtn {
   display: inline-flex;
@@ -82,10 +83,17 @@
 .secondaryAction,
 .ghostAction,
 .openBtn,
+.reindexBtn,
 .pageBtn {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(203, 213, 225, 0.92);
   color: var(--color-text-secondary);
+}
+
+.reindexBtn {
+  background: rgba(239, 246, 255, 0.94);
+  border-color: rgba(147, 197, 253, 0.9);
+  color: #1d4ed8;
 }
 
 .ghostAction {
@@ -330,6 +338,12 @@
   color: #047857 !important;
 }
 
+.warnChip {
+  background: rgba(255, 247, 237, 0.96) !important;
+  border-color: rgba(253, 186, 116, 0.85) !important;
+  color: #c2410c !important;
+}
+
 .progressBlock {
   padding: 12px 14px;
   border-radius: 18px;
@@ -361,6 +375,14 @@
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #0f766e 0%, #2563eb 100%);
+}
+
+.indexError {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b45309;
+  word-break: break-word;
 }
 
 .pagination {
@@ -445,6 +467,7 @@
   .secondaryAction,
   .ghostAction,
   .openBtn,
+.reindexBtn,
   .deleteBtn,
   .pageBtn,
   .searchInput,
