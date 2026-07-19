@@ -30,6 +30,11 @@ type PageDocument = {
   modelUsed?: string
 }
 
+type PageSource = {
+  text: string
+  markdown: string
+}
+
 type QaMessage = {
   id: string
   role: 'user' | 'assistant'
@@ -179,6 +184,40 @@ function preprocessMarkdown(text: string) {
     .replace(/\\\((.+?)\\\)/g, (_, expr) => `$${String(expr).trim()}$`)
 }
 
+type MarkdownImageToken = {
+  token: string
+  markdown: string
+}
+
+function extractMarkdownImages(markdown: string) {
+  const images: MarkdownImageToken[] = []
+  let index = 0
+  const sanitized = markdown.replace(/!\[[^\]]*]\([^)]+\)/g, (match) => {
+    const token = `[[DOC_IMAGE_${index}]]`
+    images.push({ token, markdown: match })
+    index += 1
+    return token
+  })
+  return { sanitized, images }
+}
+
+function restoreMarkdownImages(markdown: string, images: MarkdownImageToken[]) {
+  let restored = markdown
+  const missing: string[] = []
+  for (const image of images) {
+    if (restored.includes(image.token)) {
+      restored = restored.split(image.token).join(image.markdown)
+    } else {
+      missing.push(image.markdown)
+    }
+  }
+  if (missing.length) {
+    const suffix = missing.join('\n\n')
+    restored = `${restored.trim()}\n\n${suffix}`.trim()
+  }
+  return restored
+}
+
 function formatSelectionForQa(text: string, page: number) {
   const quoted = text
     .trim()
@@ -205,20 +244,20 @@ export default function ReaderPage() {
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const pdfViewportRef = useRef<HTMLDivElement | null>(null)
   const qaInputRef = useRef<HTMLTextAreaElement | null>(null)
-  const pdfDocRef = useRef<any>(null)
   const pageTextsRef = useRef<Record<number, string>>({})
+  const pdfJsPageTextsRef = useRef<Record<number, string>>({})
+  const pageMarkdownsRef = useRef<Record<number, string>>({})
   const pageDocumentsRef = useRef<Record<string, PageDocument>>({})
   const paperRef = useRef<Paper | null>(null)
   const pendingSelectionRef = useRef<{ page: number; text: string } | null>(null)
   const expandedToolPaneWidthRef = useRef(DEFAULT_COLUMN_WIDTHS[2])
-  const pendingTextLoadsRef = useRef(new Map<number, Promise<string>>())
+  const pendingTextLoadsRef = useRef(new Map<number, Promise<PageSource>>())
   const autoTranslateRunRef = useRef(0)
   const [paper, setPaper] = useState<Paper | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [scale, setScale] = useState(1.15)
-  const [pdfDoc, setPdfDoc] = useState<any>(null)
   const [activeTab, setActiveTab] = useState<ReaderTab>('profile')
   const [isDebugOpen, setIsDebugOpen] = useState(false)
   const [isQaLoading, setIsQaLoading] = useState(false)
@@ -264,7 +303,6 @@ export default function ReaderPage() {
     setPage(1)
     setTotalPages(0)
     clearSelection()
-    setPdfDoc(null)
     setPageDocuments({})
     setPageTexts({})
     setPageReadStatus({})
@@ -282,6 +320,7 @@ export default function ReaderPage() {
     pendingTextLoadsRef.current.clear()
     pendingTranslationTasksRef.current.clear()
     pendingSelectionRef.current = null
+    pageMarkdownsRef.current = {}
     setLoading(true)
 
     papersApi
@@ -315,12 +354,21 @@ export default function ReaderPage() {
   }, [currentPage, clearSelection, setSelection])
 
   useEffect(() => {
-    pdfDocRef.current = pdfDoc
-  }, [pdfDoc])
-
-  useEffect(() => {
     pageTextsRef.current = pageTexts
   }, [pageTexts])
+
+  useEffect(() => {
+    if (!paper) return
+    const isPdf =
+      (paper.document_type || '').toLowerCase() === 'pdf' ||
+      (paper.file_path || '').toLowerCase().endsWith('.pdf')
+    if (!isPdf) {
+      const total = paper.page_count || Number((paper.reader_profile || {}).total_pages || 0) || 0
+      setNumPages(total)
+      setTotalPages(total)
+      setLoading(false)
+    }
+  }, [paper, setTotalPages])
 
   useEffect(() => {
     pageDocumentsRef.current = pageDocuments
@@ -337,7 +385,13 @@ export default function ReaderPage() {
   const currentReadMessage = pageReadMessages[currentPage] || ''
   const selectionCacheKey = selectedText ? `${currentPage}:${selectedText.slice(0, 80)}` : ''
   const currentSelectionTranslation = selectionCacheKey ? (cache[selectionCacheKey]?.[currentMode] ?? '') : ''
-  const pdfUrl = id ? papersApi.getFileUrl(id) : ''
+  const hasPdfPreview = Boolean(
+    paper && (
+      (paper.document_type || '').toLowerCase() === 'pdf' ||
+      (paper.file_path || '').toLowerCase().endsWith('.pdf')
+    ),
+  )
+  const pdfUrl = id && hasPdfPreview ? papersApi.getFileUrl(id) : ''
   const readerProfile = (paper?.reader_profile || {}) as ReaderProfile
   const displayAbstract = normalizeAbstractText(paper?.abstract)
   const autoTranslateTotal = numPages || paper?.page_count || readerProfile.total_pages || 0
@@ -419,7 +473,6 @@ export default function ReaderPage() {
   }, [currentReadStatus])
 
   const onDocumentLoadSuccess = (pdf: any) => {
-    setPdfDoc(pdf)
     setNumPages(pdf.numPages)
     setTotalPages(pdf.numPages)
     setAutoTranslateProgress((prev) => ({ ...prev, total: prev.total || pdf.numPages }))
@@ -429,6 +482,31 @@ export default function ReaderPage() {
   const onDocumentLoadError = (err: Error) => {
     setError('PDF 加载失败: ' + err.message)
     setLoading(false)
+  }
+
+  const handlePdfPageLoadSuccess = async (page: any) => {
+    try {
+      const textContent = await page.getTextContent()
+      let lastY = -1
+      const textItems: string[] = []
+
+      for (const item of textContent.items || []) {
+        const value = String(item.str || '')
+        if (!value) continue
+        if (lastY !== -1 && Math.abs(item.transform?.[5] - lastY) > 5) {
+          textItems.push('\n')
+        }
+        textItems.push(value)
+        lastY = item.transform?.[5] ?? lastY
+      }
+
+      const normalized = normalizePageText(textItems.join(' '))
+      if (normalized.trim()) {
+        pdfJsPageTextsRef.current[currentPage] = normalized
+      }
+    } catch (pageTextError) {
+      console.error(`PDF.js 提取第 ${currentPage} 页文本失败:`, pageTextError)
+    }
   }
 
   const handlePdfSelection = () => {
@@ -452,8 +530,12 @@ export default function ReaderPage() {
 
   const ensurePageText = async (pageNumber: number) => {
     const cachedText = pageTextsRef.current[pageNumber]
-    if (cachedText?.trim()) {
-      return cachedText
+    const cachedMarkdown = pageMarkdownsRef.current[pageNumber]
+    if (cachedText?.trim() || cachedMarkdown?.trim()) {
+      return {
+        text: cachedText || '',
+        markdown: cachedMarkdown || '',
+      }
     }
 
     const inflight = pendingTextLoadsRef.current.get(pageNumber)
@@ -462,23 +544,20 @@ export default function ReaderPage() {
     }
 
     const task = (async () => {
-      if (!pdfDocRef.current) {
-        return ''
+      if (!id) {
+        return { text: '', markdown: '' }
       }
 
       setPageReadStatus((prev) => ({ ...prev, [pageNumber]: 'reading' }))
-      setPageReadMessages((prev) => ({ ...prev, [pageNumber]: '正在从当前页 PDF 文本层提取内容...' }))
+      setPageReadMessages((prev) => ({ ...prev, [pageNumber]: '正在读取后端提取结果...' }))
 
       try {
-        const pdfPage = await pdfDocRef.current.getPage(pageNumber)
-        const textContent = await pdfPage.getTextContent()
-        const text = normalizePageText(
-          (textContent?.items || [])
-            .map((item: any) => ('str' in item ? item.str : ''))
-            .join('\n'),
-        )
+        const res = await papersApi.getPageSource(id, pageNumber)
+        const text = normalizePageText(res.data.text || '')
+        const markdown = (res.data.markdown || '').trim()
 
         setPageTexts((prev) => ({ ...prev, [pageNumber]: text }))
+        pageMarkdownsRef.current[pageNumber] = markdown
         if (text) {
           setPageReadStatus((prev) => ({ ...prev, [pageNumber]: 'ready' }))
           setPageReadMessages((prev) => ({ ...prev, [pageNumber]: '' }))
@@ -486,19 +565,20 @@ export default function ReaderPage() {
           setPageReadStatus((prev) => ({ ...prev, [pageNumber]: 'empty' }))
           setPageReadMessages((prev) => ({
             ...prev,
-            [pageNumber]: '当前页没有可提取文本，可能是扫描页或图片页。请手动框选内容进行翻译。',
+            [pageNumber]: '当前页没有可用提取文本。',
           }))
         }
-        return text
+        return { text, markdown }
       } catch (readError: any) {
         console.error('读取当前页文本失败:', readError)
         setPageTexts((prev) => ({ ...prev, [pageNumber]: '' }))
+        pageMarkdownsRef.current[pageNumber] = ''
         setPageReadStatus((prev) => ({ ...prev, [pageNumber]: 'error' }))
         setPageReadMessages((prev) => ({
           ...prev,
-          [pageNumber]: `当前页文本读取失败：${readError?.message || '未知错误'}`,
+          [pageNumber]: `当前页提取失败：${readError?.message || '未知错误'}`,
         }))
-        return ''
+        return { text: '', markdown: '' }
       }
     })()
 
@@ -511,9 +591,9 @@ export default function ReaderPage() {
   }
 
   useEffect(() => {
-    if (!pdfDoc) return
+    if (!id) return
     void ensurePageText(currentPage)
-  }, [pdfDoc, currentPage])
+  }, [id, currentPage])
 
   const handleTranslateSelection = async (mode: ReaderMode) => {
     if (!selectedText || !id) return
@@ -553,23 +633,22 @@ export default function ReaderPage() {
     }
 
     try {
-      const res = await translationApi.getCacheEntry(id, `page-${pageNumber}-${mode}`, mode)
-      const entry = res.data.entry
-      if (!entry?.translated_text?.trim()) {
+      const res = await translationApi.getTranslatedPage(id, pageNumber, mode)
+      if (!res.data.exists || !res.data.translated_markdown?.trim()) {
         return undefined
       }
 
       const restoredDocument = {
-        markdown: entry.translated_text,
-        sourceText: entry.original_text || pageTextsRef.current[pageNumber] || '',
-        modelUsed: entry.model_used,
+        markdown: res.data.translated_markdown,
+        sourceText: res.data.source_text || pageTextsRef.current[pageNumber] || '',
+        modelUsed: res.data.model_used,
       }
       setPageDocuments((prev) => ({
         ...prev,
         [key]: restoredDocument,
       }))
-      if (entry.original_text?.trim()) {
-        setPageTexts((prev) => (prev[pageNumber] ? prev : { ...prev, [pageNumber]: entry.original_text }))
+      if (res.data.source_text?.trim()) {
+        setPageTexts((prev) => (prev[pageNumber] ? prev : { ...prev, [pageNumber]: res.data.source_text }))
       }
       return restoredDocument
     } catch (cacheError) {
@@ -599,30 +678,32 @@ export default function ReaderPage() {
     }
 
     const task = (async () => {
-      const pageText = await ensurePageText(pageNumber)
-      if (!pageText.trim()) {
-        return undefined
-      }
-
       pendingPageKeysRef.current.add(key)
       try {
-        const res = await translationApi.translate({
+        const res = await translationApi.translatePage({
           paper_id: id,
-          block_id: `page-${pageNumber}-${mode}`,
-          text: pageText,
+          page_number: pageNumber,
           mode,
-          context: `${paperRef.current?.title || 'PDF'} 第 ${pageNumber} 页全文`,
+          force,
+          pdfjs_text: pdfJsPageTextsRef.current[pageNumber] || '',
         })
 
+        if (!res.data.exists || !res.data.translated_markdown?.trim()) {
+          return undefined
+        }
+
         const nextDocument = {
-          markdown: res.data.translated_text || '',
-          sourceText: pageText,
+          markdown: res.data.translated_markdown,
+          sourceText: res.data.source_text || '',
           modelUsed: res.data.model_used,
         }
         setPageDocuments((prev) => ({
           ...prev,
           [key]: nextDocument,
         }))
+        if (res.data.source_text?.trim()) {
+          setPageTexts((prev) => ({ ...prev, [pageNumber]: res.data.source_text }))
+        }
         return nextDocument
       } finally {
         pendingPageKeysRef.current.delete(key)
@@ -651,7 +732,7 @@ export default function ReaderPage() {
   }
 
   const handleTranslateFullPage = async (force = false) => {
-    if (!id || !currentPageText.trim()) return
+    if (!id) return
 
     setIsPageTranslating(true)
     try {
@@ -694,7 +775,7 @@ export default function ReaderPage() {
   }
 
   useEffect(() => {
-    if (!isAutoFullTranslateEnabled || !id || !pdfDoc || numPages <= 0 || hasCompletedCurrentProfile) {
+    if (!isAutoFullTranslateEnabled || !id || autoTranslateTotal <= 0 || hasCompletedCurrentProfile) {
       return
     }
 
@@ -705,7 +786,7 @@ export default function ReaderPage() {
     setIsAutoTranslating(true)
     setAutoTranslateProgress((prev) => ({
       completed: prev.completed,
-      total: numPages,
+      total: autoTranslateTotal,
       failedPages: prev.failedPages,
     }))
 
@@ -713,7 +794,7 @@ export default function ReaderPage() {
       const failedPages = new Set<number>()
       let completed = 0
 
-      for (let pageNumber = 1; pageNumber <= numPages; pageNumber += 1) {
+      for (let pageNumber = 1; pageNumber <= autoTranslateTotal; pageNumber += 1) {
         if (cancelled || autoTranslateRunRef.current !== runId) {
           return
         }
@@ -732,7 +813,7 @@ export default function ReaderPage() {
 
         setAutoTranslateProgress({
           completed,
-          total: numPages,
+          total: autoTranslateTotal,
           failedPages: Array.from(failedPages).sort((a, b) => a - b),
         })
       }
@@ -747,7 +828,7 @@ export default function ReaderPage() {
         auto_full_translation_mode: currentMode,
         auto_full_translation_status: finalFailedPages.length && completed === 0 ? 'failed' : 'completed',
         translated_pages: completed,
-        total_pages: numPages,
+        total_pages: autoTranslateTotal,
         failed_pages: finalFailedPages,
       })
       setIsAutoTranslating(false)
@@ -759,7 +840,7 @@ export default function ReaderPage() {
         setIsAutoTranslating(false)
       }
     }
-  }, [isAutoFullTranslateEnabled, id, pdfDoc, numPages, currentMode, hasCompletedCurrentProfile])
+  }, [isAutoFullTranslateEnabled, id, autoTranslateTotal, currentMode, hasCompletedCurrentProfile])
 
   useEffect(() => {
     if (!id || !currentPage || currentPageDocument?.markdown) {
@@ -878,28 +959,6 @@ export default function ReaderPage() {
       setSelection(text, null)
     }
     setActiveTab('selection')
-  }
-
-  const handlePageTextSuccess = (textContent: any) => {
-    const text = normalizePageText(
-      (textContent?.items || [])
-        .map((item: any) => ('str' in item ? item.str : ''))
-        .join('\n'),
-    )
-
-    if (!text) return
-    setPageTexts((prev) => (prev[currentPage] === text ? prev : { ...prev, [currentPage]: text }))
-    setPageReadStatus((prev) => ({ ...prev, [currentPage]: 'ready' }))
-    setPageReadMessages((prev) => ({ ...prev, [currentPage]: '' }))
-  }
-
-  const handlePageTextError = (textError: Error) => {
-    console.error('TextLayer 读取失败:', textError)
-    setPageReadStatus((prev) => ({ ...prev, [currentPage]: 'error' }))
-    setPageReadMessages((prev) => ({
-      ...prev,
-      [currentPage]: `TextLayer 读取失败：${textError.message || '未知错误'}`,
-    }))
   }
 
   const handleResizeStart = (handleIndex: 0 | 1) => (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1341,7 +1400,7 @@ export default function ReaderPage() {
               </div>
             )}
 
-            {pdfUrl && (
+            {pdfUrl ? (
               <Document
                 file={pdfUrl}
                 onLoadSuccess={onDocumentLoadSuccess}
@@ -1356,15 +1415,18 @@ export default function ReaderPage() {
                 <Page
                   pageNumber={currentPage}
                   scale={scale}
+                  onLoadSuccess={handlePdfPageLoadSuccess}
                   renderTextLayer={true}
                   renderAnnotationLayer={true}
-                  onGetTextSuccess={handlePageTextSuccess}
-                  onGetTextError={handlePageTextError}
                   devicePixelRatio={Math.min(3, window.devicePixelRatio || 1)}
                   className={styles.pdfPage}
                 />
               </Document>
-            )}
+            ) : !loading ? (
+              <div className={styles.emptyState}>
+                <p>当前文档没有 PDF 预览，右侧仍可查看提取原文、翻译和 QA。</p>
+              </div>
+            ) : null}
           </div>
 
           {selectedText && (

@@ -6,6 +6,9 @@ export interface TranslateRequest {
   text: string
   mode: 'quick' | 'polish'
   context?: string
+  previous_summary?: string
+  reference_pages?: string
+  auxiliary_text?: string
 }
 
 export interface TranslateResponse {
@@ -33,22 +36,23 @@ export interface TranslatePageRequest {
   paper_id: string
   page_number: number
   mode: 'quick' | 'polish'
-}
-
-export interface TranslatePageBlock {
-  block_id: string
-  original_text: string
-  translated_text: string
-  from_cache: boolean
+  force?: boolean
+  pdfjs_text?: string
 }
 
 export interface TranslatePageResponse {
   paper_id: string
   page_number: number
-  blocks: TranslatePageBlock[]
-  total_blocks: number
-  cached_blocks: number
+  mode: 'quick' | 'polish'
+  exists: boolean
+  source_text: string
+  source_markdown: string
+  translated_markdown: string
+  translated_markdown_path?: string
+  previous_summary?: string
+  from_cache: boolean
   model_used?: string
+  tokens_used?: number
 }
 
 export const translationApi = {
@@ -59,6 +63,10 @@ export const translationApi = {
   getCacheEntry: (paperId: string, blockId: string, mode: 'quick' | 'polish') =>
     apiClient.get<{ paper_id: string; entry: TranslateCacheEntry | null }>(`/translate/cache/${paperId}/entry`, {
       params: { block_id: blockId, mode },
+    }),
+  getTranslatedPage: (paperId: string, pageNumber: number, mode: 'quick' | 'polish') =>
+    apiClient.get<TranslatePageResponse>('/translate/page', {
+      params: { paper_id: paperId, page_number: pageNumber, mode },
     }),
   translatePage: (data: TranslatePageRequest) =>
     apiClient.post<TranslatePageResponse>('/translate/page', data),

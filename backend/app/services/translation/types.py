@@ -16,7 +16,11 @@ class TranslationRequest:
     text: str
     mode: TranslationMode = TranslationMode.QUICK
     context: str = ""
+    previous_summary: str = ""
+    reference_pages: str = ""
+    auxiliary_text: str = ""
     terminology: dict[str, str] = field(default_factory=dict)
+    skip_cache: bool = False
 
 
 @dataclass
@@ -30,6 +34,12 @@ class TranslationResult:
     from_cache: bool = False
     model_used: str = ""
     tokens_used: int = 0
+    finish_reason: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    source_text_length: int = 0
+    translated_text_length: int = 0
+    retry_count: int = 0
 
 
 @dataclass

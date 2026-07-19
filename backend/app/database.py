@@ -45,6 +45,9 @@ def _apply_lightweight_migrations(sync_conn):
             "pdf_metadata_json": "ALTER TABLE papers ADD COLUMN pdf_metadata_json TEXT DEFAULT '{}'",
             "ai_summary_md": "ALTER TABLE papers ADD COLUMN ai_summary_md TEXT DEFAULT ''",
             "reader_profile_json": "ALTER TABLE papers ADD COLUMN reader_profile_json TEXT DEFAULT '{}'",
+            "source_url": "ALTER TABLE papers ADD COLUMN source_url VARCHAR(1000) DEFAULT ''",
+            "document_type": "ALTER TABLE papers ADD COLUMN document_type VARCHAR(50) DEFAULT 'pdf'",
+            "markdown_path": "ALTER TABLE papers ADD COLUMN markdown_path VARCHAR(1000) DEFAULT ''",
         }
         for column, sql in migrations.items():
             if column not in paper_columns:
@@ -58,4 +61,17 @@ def _apply_lightweight_migrations(sync_conn):
         }
         for column, sql in migrations.items():
             if column not in agent_run_columns:
+                sync_conn.execute(text(sql))
+
+    if "translation_cache" in tables:
+        translation_columns = {column["name"] for column in inspector.get_columns("translation_cache")}
+        migrations = {
+            "finish_reason": "ALTER TABLE translation_cache ADD COLUMN finish_reason VARCHAR(50) DEFAULT ''",
+            "prompt_tokens": "ALTER TABLE translation_cache ADD COLUMN prompt_tokens INTEGER DEFAULT 0",
+            "completion_tokens": "ALTER TABLE translation_cache ADD COLUMN completion_tokens INTEGER DEFAULT 0",
+            "source_text_length": "ALTER TABLE translation_cache ADD COLUMN source_text_length INTEGER DEFAULT 0",
+            "translated_text_length": "ALTER TABLE translation_cache ADD COLUMN translated_text_length INTEGER DEFAULT 0",
+        }
+        for column, sql in migrations.items():
+            if column not in translation_columns:
                 sync_conn.execute(text(sql))
