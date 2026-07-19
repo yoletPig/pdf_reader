@@ -6,4 +6,8 @@
 node_modules
 *.pyc
 dist
-/backend/data
+/backend/data/
+*.db
+pdf_reader.db
+.env
+=1.23.0
