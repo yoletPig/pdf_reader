@@ -4,6 +4,7 @@ import re
 import uuid
 import json
 import shutil
+from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
@@ -18,6 +19,7 @@ from app.models.paper import Paper
 from app.models.paper_block import PaperBlock
 from app.models.paper_chunk import PaperChunk
 from app.models.translation_cache import TranslationCache
+from app.services.docling import docling_service
 from app.services.ingestion import paper_ingestion_service
 from app.services.ingestion import vector_index_service
 from app.services.llm import LLMMessage, LLMRequest, llm_router
@@ -49,7 +51,10 @@ def _paper_to_dict(p: Paper) -> dict:
         "year": p.year,
         "source": p.source,
         "source_id": p.source_id,
+        "source_url": getattr(p, "source_url", ""),
+        "document_type": getattr(p, "document_type", "pdf"),
         "file_path": p.file_path,
+        "markdown_path": getattr(p, "markdown_path", ""),
         "tags": p.tags,
         "page_count": p.page_count,
         "pdf_metadata": _safe_json_loads(p.pdf_metadata_json, {}),
@@ -104,8 +109,6 @@ def _sanitize_filename(filename: str | None, fallback_stem: str = "paper") -> st
     candidate = re.sub(r"[^\w.\- ()\u4e00-\u9fff]+", "_", candidate).strip(" ._")
     if not candidate:
         candidate = fallback_stem
-    if not candidate.lower().endswith(".pdf"):
-        candidate = f"{candidate}.pdf"
     return candidate
 
 
@@ -241,60 +244,64 @@ def _extract_abstract_from_lines(lines: list[dict]) -> str:
     return abstract[:max_chars]
 
 
-def _extract_pdf_metadata(file_path: str, fallback_title: str) -> dict:
+def _extract_document_metadata(
+    source_ref: str,
+    fallback_title: str,
+    *,
+    paper_id: str = "",
+    artifact_dir: Path | None = None,
+    asset_url_prefix: str = "",
+) -> dict:
     extracted = {
         "title": fallback_title,
         "abstract": "",
         "page_count": 0,
+        "document_type": "document",
         "pdf_metadata": {},
+        "markdown": "",
     }
-
-    import fitz
-
-    doc = fitz.open(file_path)
     try:
-        extracted["page_count"] = len(doc)
-        metadata = {
-            key: str(value)
-            for key, value in (doc.metadata or {}).items()
-            if value not in (None, "")
-        }
-        extracted["pdf_metadata"] = metadata
-
-        first_page = doc[0] if len(doc) > 0 else None
-        lines = _extract_first_page_lines(first_page) if first_page else []
-        page_height = float(first_page.rect.height) if first_page else 0.0
-
-        metadata_title = _normalize_inline_text(metadata.get("title"))
-        visual_title = _extract_title_from_lines(lines, page_height, fallback_title)
-        chosen_title = metadata_title
-        if _is_placeholder_title(chosen_title, fallback_title) or len(chosen_title) < len(visual_title):
-            chosen_title = visual_title
-        extracted["title"] = _normalize_inline_text(chosen_title) or fallback_title
-
-        abstract = _extract_abstract_from_lines(lines)
-        if not abstract:
-            subject = _normalize_inline_text(metadata.get("subject"))
-            if len(subject) >= 40:
-                abstract = subject
-        extracted["abstract"] = abstract
-
+        extraction = docling_service.extract(
+            source_ref,
+            paper_id=paper_id,
+            artifact_dir=artifact_dir,
+            asset_url_prefix=asset_url_prefix,
+        )
+        extracted["title"] = _normalize_inline_text(extraction.title) or fallback_title
+        extracted["abstract"] = _normalize_inline_text(extraction.abstract)
+        extracted["page_count"] = extraction.page_count
+        extracted["document_type"] = extraction.source_type
+        extracted["markdown"] = extraction.markdown
         extracted["pdf_metadata"] = {
-            **metadata,
+            **(extraction.metadata or {}),
             "detected_title": extracted["title"],
-            "abstract_source": "first_page_abstract" if abstract else "",
+            "source_ref": source_ref,
+            "document_type": extraction.source_type,
+            "page_sources": [
+                {
+                    "page_number": page.page_number,
+                    "text": page.text,
+                    "markdown": page.markdown,
+                }
+                for page in extraction.page_sources
+            ],
         }
         return extracted
-    finally:
-        doc.close()
+    except Exception:
+        return extracted
+
+
+def _paper_source_ref(paper: Paper) -> str:
+    return (paper.file_path or "").strip() or (getattr(paper, "source_url", "") or "").strip()
 
 
 async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> bool:
-    if not paper.file_path or not os.path.exists(paper.file_path):
+    source_ref = _paper_source_ref(paper)
+    if not source_ref:
         return False
 
     needs_refresh = (
-        _is_placeholder_title(paper.title, paper.file_path)
+        _is_placeholder_title(paper.title, source_ref)
         or _is_placeholder_abstract(paper.abstract)
         or paper.page_count <= 0
         or not _safe_json_loads(paper.pdf_metadata_json, {})
@@ -303,9 +310,7 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
         return False
 
     try:
-        extracted = _extract_pdf_metadata(paper.file_path, _default_title_from_path(paper.file_path))
-    except ImportError:
-        return False
+        extracted = _extract_document_metadata(source_ref, _default_title_from_path(source_ref))
     except Exception:
         return False
 
@@ -315,9 +320,7 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
     detected_metadata = extracted["pdf_metadata"]
     detected_page_count = extracted["page_count"]
 
-    if detected_title and (
-        _is_placeholder_title(paper.title, paper.file_path) or not _normalize_inline_text(paper.title)
-    ) and detected_title != paper.title:
+    if detected_title and (_is_placeholder_title(paper.title, source_ref) or not _normalize_inline_text(paper.title)) and detected_title != paper.title:
         paper.title = detected_title
         changed = True
 
@@ -333,17 +336,22 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
     if detected_metadata and detected_metadata != current_metadata:
         paper.pdf_metadata_json = json.dumps(detected_metadata, ensure_ascii=False)
         changed = True
+    if extracted.get("document_type") and extracted["document_type"] != getattr(paper, "document_type", ""):
+        paper.document_type = extracted["document_type"]
+        changed = True
 
     return changed
 
 
-async def create_paper_from_pdf_bytes(
+async def create_paper_from_source(
     db: AsyncSession,
     *,
-    filename: str,
-    content: bytes,
+    filename: str = "",
+    content: bytes | None = None,
+    source_ref: str = "",
     source: str = "local",
     source_id: str = "",
+    source_url: str = "",
     authors: Optional[list[str]] = None,
     abstract: str = "",
     title: str = "",
@@ -354,27 +362,59 @@ async def create_paper_from_pdf_bytes(
     paper_dir = settings.PAPERS_DIR / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
 
-    fallback_title = _normalize_inline_text(title) or os.path.splitext(filename)[0] or "paper"
-    safe_filename = _sanitize_filename(filename, fallback_title or "paper")
-    file_path = paper_dir / safe_filename
-    file_path.write_bytes(content)
-    file_size = len(content)
+    saved_file_path = ""
+    resolved_source_url = _normalize_inline_text(source_url)
+    resolved_source_ref = _normalize_inline_text(source_ref)
+
+    fallback_name = filename or resolved_source_ref or resolved_source_url or "paper"
+    fallback_title = _normalize_inline_text(title) or os.path.splitext(os.path.basename(fallback_name))[0] or "paper"
+    if content is not None:
+        safe_filename = _sanitize_filename(filename, fallback_title or "paper")
+        file_path = paper_dir / safe_filename
+        file_path.write_bytes(content)
+        saved_file_path = str(file_path)
+        resolved_source_ref = saved_file_path
+    elif resolved_source_ref and "://" not in resolved_source_ref:
+        saved_file_path = resolved_source_ref
 
     detected_title = fallback_title
     detected_abstract = ""
     page_count = 0
+    document_type = "document"
     pdf_metadata: dict[str, str] = {}
+    extracted_markdown = ""
 
     try:
-        extracted = _extract_pdf_metadata(str(file_path), fallback_title)
+        extracted = _extract_document_metadata(
+            resolved_source_ref or resolved_source_url,
+            fallback_title,
+            paper_id=paper_id,
+            artifact_dir=paper_dir / "artifacts",
+            asset_url_prefix=f"/api/papers/{paper_id}/artifacts",
+        )
         detected_title = extracted["title"] or fallback_title
         detected_abstract = extracted["abstract"]
         page_count = extracted["page_count"]
+        document_type = extracted.get("document_type", "document")
         pdf_metadata = extracted["pdf_metadata"]
-    except ImportError:
-        detected_abstract = f"文件大小: {file_size} bytes"
+        extracted_markdown = extracted.get("markdown", "")
     except Exception as exc:
-        detected_abstract = f"PDF 解析失败: {str(exc)[:200]}"
+        detected_abstract = f"文档解析失败: {str(exc)[:200]}"
+
+    markdown_path = paper_dir / "source.md"
+    markdown_path.write_text(extracted_markdown or "", encoding="utf-8")
+    page_sources_dir = paper_dir / "page_sources"
+    page_sources_dir.mkdir(parents=True, exist_ok=True)
+    page_sources = (pdf_metadata.get("page_sources") or []) if isinstance(pdf_metadata.get("page_sources"), list) else []
+    for page_source in page_sources:
+        try:
+            page_number = int(page_source.get("page_number", 0) or 0)
+        except Exception:
+            page_number = 0
+        if page_number <= 0:
+            continue
+        (page_sources_dir / f"page-{page_number:04d}.md").write_text(page_source.get("markdown", "") or "", encoding="utf-8")
+        (page_sources_dir / f"page-{page_number:04d}.txt").write_text(page_source.get("text", "") or "", encoding="utf-8")
 
     final_title = _normalize_inline_text(title) or detected_title or fallback_title
     final_abstract = _normalize_inline_text(abstract) or detected_abstract
@@ -384,6 +424,8 @@ async def create_paper_from_pdf_bytes(
     }
     if final_title:
         merged_pdf_metadata.setdefault("detected_title", final_title)
+    if resolved_source_url:
+        merged_pdf_metadata.setdefault("source_url", resolved_source_url)
 
     reader_profile = {
         "auto_full_translation_enabled": False,
@@ -403,7 +445,10 @@ async def create_paper_from_pdf_bytes(
         "year": year if year is not None else (datetime.utcnow().year if source == "local" else None),
         "source": source,
         "source_id": source_id,
-        "file_path": str(file_path),
+        "source_url": resolved_source_url,
+        "document_type": document_type,
+        "file_path": saved_file_path,
+        "markdown_path": str(markdown_path),
         "tags": "[]",
         "page_count": page_count,
         "pdf_metadata": merged_pdf_metadata,
@@ -424,7 +469,10 @@ async def create_paper_from_pdf_bytes(
             year=paper_data["year"],
             source=source,
             source_id=source_id,
-            file_path=str(file_path),
+            source_url=resolved_source_url,
+            document_type=document_type,
+            file_path=saved_file_path,
+            markdown_path=str(markdown_path),
             tags="[]",
             page_count=page_count,
             pdf_metadata_json=json.dumps(merged_pdf_metadata, ensure_ascii=False),
@@ -471,6 +519,33 @@ async def create_paper_from_pdf_bytes(
 
     _sync_memory_store(paper_data)
     return paper_data
+
+
+async def create_paper_from_pdf_bytes(
+    db: AsyncSession,
+    *,
+    filename: str,
+    content: bytes,
+    source: str = "local",
+    source_id: str = "",
+    authors: Optional[list[str]] = None,
+    abstract: str = "",
+    title: str = "",
+    year: Optional[int] = None,
+    extra_pdf_metadata: Optional[dict[str, str]] = None,
+) -> dict:
+    return await create_paper_from_source(
+        db,
+        filename=filename,
+        content=content,
+        source=source,
+        source_id=source_id,
+        authors=authors,
+        abstract=abstract,
+        title=title,
+        year=year,
+        extra_pdf_metadata=extra_pdf_metadata,
+    )
 
 
 async def _reindex_paper(db: AsyncSession, paper: Paper) -> dict:
@@ -717,11 +792,6 @@ async def list_papers(
 
         result = await db.execute(stmt)
         papers = result.scalars().all()
-        metadata_changed = False
-        for paper in papers:
-            metadata_changed = await _refresh_paper_metadata_if_needed(db, paper) or metadata_changed
-        if metadata_changed:
-            await db.commit()
         serialized_papers = [_paper_to_dict(p) for p in papers]
         for paper_data in serialized_papers:
             _sync_memory_store(paper_data)
@@ -759,11 +829,13 @@ async def upload_paper(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传 PDF 文件"""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+    """上传文件并通过 Docling 提取内容。"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
     content = await file.read()
-    paper_data = await create_paper_from_pdf_bytes(
+    if not content:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    paper_data = await create_paper_from_source(
         db,
         filename=file.filename,
         content=content,
@@ -777,6 +849,67 @@ async def upload_paper(
     }
 
 
+@router.get("/chunks")
+async def list_paper_chunks(
+    paper_id: Optional[str] = None,
+    page: Optional[int] = None,
+    limit: int = 500,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    """查看持久化的 paper_chunks，支持按论文和页码过滤。"""
+    limit = max(1, min(limit, 2000))
+    offset = max(0, offset)
+
+    filters = []
+    if paper_id:
+        filters.append(PaperChunk.paper_id == paper_id)
+    if page is not None:
+        filters.append(PaperChunk.page_number == page)
+
+    count_stmt = select(func.count()).select_from(PaperChunk)
+    if filters:
+        count_stmt = count_stmt.where(*filters)
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    stmt = (
+        select(PaperChunk, Paper.title)
+        .join(Paper, Paper.id == PaperChunk.paper_id)
+        .order_by(PaperChunk.paper_id.asc(), PaperChunk.page_number.asc(), PaperChunk.chunk_id.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if filters:
+        stmt = stmt.where(*filters)
+
+    rows = (await db.execute(stmt)).all()
+    chunks = []
+    for chunk, paper_title in rows:
+        metadata = _safe_json_loads(chunk.metadata_json, {})
+        chunks.append(
+            {
+                "id": chunk.id,
+                "paper_id": chunk.paper_id,
+                "paper_title": paper_title or "",
+                "chunk_id": chunk.chunk_id,
+                "page": chunk.page_number,
+                "block_id": chunk.block_id,
+                "text": chunk.text,
+                "metadata": metadata,
+                "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+            }
+        )
+
+    return {
+        "paper_id": paper_id,
+        "page": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "chunks": chunks,
+    }
+
+
 @router.get("/{paper_id}")
 async def get_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
     """获取论文详情"""
@@ -784,9 +917,6 @@ async def get_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
         result = await db.execute(select(Paper).where(Paper.id == paper_id))
         paper = result.scalar_one_or_none()
         if paper:
-            if await _refresh_paper_metadata_if_needed(db, paper):
-                await db.commit()
-                await db.refresh(paper)
             paper_data = _paper_to_dict(paper)
             _sync_memory_store(paper_data)
             return paper_data
@@ -840,8 +970,9 @@ async def reindex_paper(
 ):
     """重建论文 blocks/chunks 索引。"""
     paper = await _load_paper_or_404(db, paper_id)
-    if not paper.file_path or not os.path.exists(paper.file_path):
-        raise HTTPException(status_code=404, detail="PDF 文件不存在，无法重建索引")
+    source_ref = _paper_source_ref(paper)
+    if not source_ref or ("://" not in source_ref and not os.path.exists(source_ref)):
+        raise HTTPException(status_code=404, detail="源文档不存在，无法重建索引")
     return await _reindex_paper(db, paper)
 
 
@@ -907,18 +1038,28 @@ async def delete_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
     return {"message": "删除成功", "paper_id": paper_id}
 
 
+@router.get("/{paper_id}/artifacts/{artifact_name:path}")
+async def get_paper_artifact(paper_id: str, artifact_name: str):
+    """返回 Docling 导出的图片等 artifacts。"""
+    artifact_root = (settings.PAPERS_DIR / paper_id / "artifacts").resolve()
+    target = (artifact_root / artifact_name).resolve()
+    if not str(target).startswith(str(artifact_root)) or not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="artifact 不存在")
+    return FileResponse(path=str(target), filename=target.name)
+
+
 @router.get("/{paper_id}/file")
 async def get_paper_file(paper_id: str):
-    """获取 PDF 文件（供前端渲染）"""
-    # 查找文件路径
-    paper_dir = settings.PAPERS_DIR / paper_id
-    if paper_dir.exists():
-        pdf_files = list(paper_dir.glob("*.pdf"))
-        if pdf_files:
+    """获取 PDF 文件（供前端渲染）。"""
+    from app.database import async_session_factory
+
+    async with async_session_factory() as session:
+        paper = (await session.execute(select(Paper).where(Paper.id == paper_id))).scalar_one_or_none()
+        if paper and paper.file_path and paper.file_path.lower().endswith(".pdf") and os.path.exists(paper.file_path):
             return FileResponse(
-                path=str(pdf_files[0]),
+                path=paper.file_path,
                 media_type="application/pdf",
-                filename=pdf_files[0].name,
+                filename=os.path.basename(paper.file_path),
             )
 
     raise HTTPException(status_code=404, detail="PDF 文件不存在")
@@ -927,43 +1068,106 @@ async def get_paper_file(paper_id: str):
 @router.get("/{paper_id}/blocks")
 async def get_paper_blocks(paper_id: str, page: Optional[int] = None):
     """获取解析后的文本块"""
-    from app.services.pdf import pdf_service
+    from app.database import async_session_factory
 
-    blocks = pdf_service.get_blocks(paper_id, page_number=page)
-    if not blocks:
-        from app.database import async_session_factory
-
-        async with async_session_factory() as session:
-            stmt = select(PaperBlock).where(PaperBlock.paper_id == paper_id).order_by(PaperBlock.page_number.asc())
-            if page is not None:
-                stmt = stmt.where(PaperBlock.page_number == page)
-            rows = (await session.execute(stmt)).scalars().all()
-            return {
-                "paper_id": paper_id,
-                "blocks": [
-                    {
-                        "id": row.block_id,
-                        "text": row.text,
-                        "page": row.page_number,
-                        "bbox": json.loads(row.bbox_json or "[]"),
-                        "block_type": row.block_type,
-                        "section_title": row.section_title,
-                    }
-                    for row in rows
-                ],
+    async with async_session_factory() as session:
+        stmt = select(PaperBlock).where(PaperBlock.paper_id == paper_id).order_by(PaperBlock.page_number.asc(), PaperBlock.created_at.asc())
+        if page is not None:
+            stmt = stmt.where(PaperBlock.page_number == page)
+        rows = (await session.execute(stmt)).scalars().all()
+        blocks = [
+            {
+                "id": row.block_id,
+                "text": row.text,
+                "page": row.page_number,
+                "bbox": json.loads(row.bbox_json or "[]"),
+                "block_type": row.block_type,
+                "section_title": row.section_title,
             }
-
+            for row in rows
+        ]
     return {
         "paper_id": paper_id,
-        "blocks": [
-            {
-                "id": b.id,
-                "text": b.text,
-                "page": b.page,
-                "bbox": list(b.bbox),
-                "block_type": b.block_type.value,
-                "section_title": b.section_title,
-            }
-            for b in blocks
-        ],
+        "blocks": blocks,
+    }
+
+
+@router.get("/{paper_id}/page-source")
+async def get_paper_page_source(
+    paper_id: str,
+    page: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """返回指定页的 Docling 提取原文和 markdown。"""
+    page_number = max(1, page)
+    paper = await _load_paper_or_404(db, paper_id)
+    page_sources_dir = settings.PAPERS_DIR / paper_id / "page_sources"
+    page_markdown_path = page_sources_dir / f"page-{page_number:04d}.md"
+    page_text_path = page_sources_dir / f"page-{page_number:04d}.txt"
+
+    if page_markdown_path.exists() or page_text_path.exists():
+        text = page_text_path.read_text(encoding="utf-8") if page_text_path.exists() else ""
+        markdown = page_markdown_path.read_text(encoding="utf-8") if page_markdown_path.exists() else ""
+        stmt = (
+            select(func.count())
+            .select_from(PaperBlock)
+            .where(PaperBlock.paper_id == paper_id, PaperBlock.page_number == page_number)
+        )
+        block_count = (await db.execute(stmt)).scalar() or 0
+        image_count = markdown.count("![")
+        return {
+            "paper_id": paper_id,
+            "page_number": page_number,
+            "document_type": getattr(paper, "document_type", "pdf"),
+            "block_count": block_count,
+            "text": text,
+            "markdown": markdown,
+            "image_count": image_count,
+        }
+
+    stmt = (
+        select(PaperBlock)
+        .where(PaperBlock.paper_id == paper_id, PaperBlock.page_number == page_number)
+        .order_by(PaperBlock.created_at.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    def render_markdown(block_type: str, text: str) -> str:
+        normalized = (text or "").strip()
+        if not normalized:
+            return ""
+        if block_type == "heading":
+            return f"## {normalized}"
+        if block_type == "equation":
+            return f"$$\n{normalized}\n$$"
+        return normalized
+
+    text = "\n\n".join((row.text or "").strip() for row in rows if (row.text or "").strip())
+    markdown = "\n\n".join(render_markdown(row.block_type, row.text) for row in rows if (row.text or "").strip())
+    return {
+        "paper_id": paper_id,
+        "page_number": page_number,
+        "document_type": getattr(paper, "document_type", "pdf"),
+        "block_count": len(rows),
+        "text": text,
+        "markdown": markdown,
+        "image_count": markdown.count("!["),
+    }
+
+
+@router.get("/{paper_id}/markdown")
+async def get_paper_markdown(
+    paper_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """返回 Docling 落地的 markdown 原文。"""
+    paper = await _load_paper_or_404(db, paper_id)
+    markdown_path = getattr(paper, "markdown_path", "") or ""
+    if not markdown_path or not os.path.exists(markdown_path):
+        raise HTTPException(status_code=404, detail="提取 markdown 不存在")
+    return {
+        "paper_id": paper_id,
+        "document_type": getattr(paper, "document_type", "pdf"),
+        "markdown_path": markdown_path,
+        "content": Path(markdown_path).read_text(encoding="utf-8"),
     }

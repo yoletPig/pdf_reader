@@ -16,7 +16,10 @@ class Paper(Base):
     year: Mapped[int] = mapped_column(Integer, nullable=True, default=None)
     source: Mapped[str] = mapped_column(String(50), default="local")  # arxiv / semantic_scholar / local
     source_id: Mapped[str] = mapped_column(String(200), default="")
+    source_url: Mapped[str] = mapped_column(String(1000), default="")
+    document_type: Mapped[str] = mapped_column(String(50), default="pdf")
     file_path: Mapped[str] = mapped_column(String(1000), default="")
+    markdown_path: Mapped[str] = mapped_column(String(1000), default="")
     tags: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     page_count: Mapped[int] = mapped_column(Integer, default=0)
     pdf_metadata_json: Mapped[str] = mapped_column(Text, default="{}")

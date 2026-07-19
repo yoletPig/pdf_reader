@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # Embedding
     EMBEDDING_PROVIDER: str = "local_api"  # local_api / local_hash
-    EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     EMBEDDING_DEVICE: str = "cpu"
     EMBEDDING_API_KEY: Optional[str] = None
     EMBEDDING_API_URL: Optional[str] = "http://127.0.0.1:8001/v1/embeddings"

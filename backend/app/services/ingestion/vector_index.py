@@ -135,8 +135,7 @@ class VectorIndexService:
             key=lambda item: item["score"],
             reverse=True,
         )
-        positive = [item for item in ranked if item["score"] > 0]
-        return positive[:top_k]
+        return ranked[:top_k]
 
     async def _embed_texts(self, texts: list[str]) -> np.ndarray:
         if not texts:
@@ -151,6 +150,12 @@ class VectorIndexService:
 
         if matrix.ndim == 1:
             matrix = matrix.reshape(1, -1)
+
+        # Always normalize so retrieval uses cosine similarity semantics even if
+        # the provider does not return unit-length vectors.
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        matrix = matrix / norms
 
         if matrix.shape[1] != self.dim:
             self.dim = matrix.shape[1]
@@ -182,9 +187,8 @@ class VectorIndexService:
                 matrix = np.load(self._matrix_path)
                 if matrix.ndim == 1:
                     matrix = matrix.reshape(1, -1)
-                if matrix.shape[1] != self.dim:
-                    matrix = np.empty((0, self.dim), dtype=np.float32)
-                    metadata = []
+                if matrix.size:
+                    self.dim = int(matrix.shape[1])
             except Exception:
                 matrix = np.empty((0, self.dim), dtype=np.float32)
                 metadata = []
