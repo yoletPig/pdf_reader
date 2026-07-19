@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '../../stores/chat-store'
-import { AgentRunEvent, agentRunsApi } from '../../api/agent-runs'
+import { AgentRunEvent, RetrievalDebugResult, agentRunsApi } from '../../api/agent-runs'
 import { papersApi, Paper } from '../../api/papers'
 import styles from './ChatPage.module.css'
 
@@ -45,6 +45,7 @@ export default function ChatPage() {
   const [selectedPaperId, setSelectedPaperId] = useState('')
   const [qaSessionId, setQaSessionId] = useState('')
   const [expandedRuns, setExpandedRuns] = useState<Record<string, boolean>>({})
+  const [expandedRetrievals, setExpandedRetrievals] = useState<Record<string, boolean>>({})
   const { messages, isStreaming, addMessage, setStreaming, clearMessages } = useChatStore()
   const scopeLabel = useMemo(() => selectedPaperId ? '单论文' : '跨论文', [selectedPaperId])
 
@@ -81,10 +82,19 @@ export default function ChatPage() {
       })
       const data = res.data as any
       let events: AgentRunEvent[] = []
+      let retrievalDebug
       if (data.run_id) {
         try {
-          const eventsRes = await agentRunsApi.getEvents(data.run_id)
+          const [eventsRes, retrievalRes] = await Promise.all([
+            agentRunsApi.getEvents(data.run_id),
+            agentRunsApi.getRetrieveDebug({
+              question: userMsg.content,
+              paper_id: selectedPaperId || undefined,
+              top_k: 5,
+            }),
+          ])
           events = eventsRes.data.events || []
+          retrievalDebug = retrievalRes.data
         } catch (eventErr) {
           console.error(eventErr)
         }
@@ -97,6 +107,7 @@ export default function ChatPage() {
         sources: data.answer?.sources || [],
         traceSummary: data.answer?.trace_summary,
         events,
+        retrievalDebug,
         timestamp: Date.now(),
       })
     } catch (err) {
@@ -152,19 +163,59 @@ export default function ChatPage() {
               ) : null}
               {msg.runId && msg.events && msg.events.length > 0 ? (
                 <div className={styles.eventsPanel}>
-                  <button
-                    type="button"
-                    className={styles.eventsToggle}
-                    onClick={() => setExpandedRuns((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
-                  >
-                    {expandedRuns[msg.runId] ? '隐藏执行过程' : '查看执行过程'}
-                  </button>
+                  <div className={styles.panelActions}>
+                    <button
+                      type="button"
+                      className={styles.eventsToggle}
+                      onClick={() => setExpandedRuns((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
+                    >
+                      {expandedRuns[msg.runId] ? '隐藏执行过程' : '查看执行过程'}
+                    </button>
+                    {msg.retrievalDebug?.results?.length ? (
+                      <button
+                        type="button"
+                        className={styles.eventsToggle}
+                        onClick={() => setExpandedRetrievals((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
+                      >
+                        {expandedRetrievals[msg.runId] ? '隐藏检索命中' : '查看检索命中'}
+                      </button>
+                    ) : null}
+                  </div>
                   {expandedRuns[msg.runId] ? (
                     <div className={styles.eventsList}>
                       {msg.events.map((event) => (
                         <div key={`${msg.runId}-${event.sequence}`} className={styles.eventRow}>
                           <span className={styles.eventType}>{event.type}</span>
                           <span className={styles.eventSummary}>{formatEventSummary(event)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {expandedRetrievals[msg.runId] && msg.retrievalDebug?.results?.length ? (
+                    <div className={styles.retrievalList}>
+                      <div className={styles.retrievalHeader}>
+                        <span>{msg.retrievalDebug.candidate_count} chunks</span>
+                        <span>{msg.retrievalDebug.used_fallback ? 'fallback' : 'scored'}</span>
+                      </div>
+                      {msg.retrievalDebug.results.map((result: RetrievalDebugResult) => (
+                        <div key={`${msg.runId}-${result.chunk_id}`} className={styles.retrievalCard}>
+                          <div className={styles.retrievalMeta}>
+                            <span>{result.paper_title}</span>
+                            <span>p.{result.page}</span>
+                            <span>{result.chunk_id}</span>
+                          </div>
+                          {result.section_title ? (
+                            <div className={styles.retrievalSection}>{result.section_title}</div>
+                          ) : null}
+                          <pre className={styles.retrievalText}>{result.chunk_text}</pre>
+                          <div className={styles.retrievalScores}>
+                            <span>final {result.score_breakdown.final_score.toFixed(4)}</span>
+                            <span>vector {result.score_breakdown.vector_score.toFixed(4)}</span>
+                            <span>lexical {result.score_breakdown.lexical_score.toFixed(4)}</span>
+                            <span>bridge {result.score_breakdown.bridge_score.toFixed(4)}</span>
+                            <span>section {result.score_breakdown.section_bonus.toFixed(4)}</span>
+                            <span>clue {result.score_breakdown.clue_bonus.toFixed(4)}</span>
+                          </div>
                         </div>
                       ))}
                     </div>

@@ -79,10 +79,6 @@ export default function HomePage() {
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('仅支持 PDF 文件')
-      return
-    }
 
     setUploading(true)
     try {
@@ -187,13 +183,13 @@ export default function HomePage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf"
+              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.md,.html,.htm,.txt"
               onChange={handleUpload}
               style={{ display: 'none' }}
               id="pdf-upload-input"
             />
             <button className={styles.primaryAction} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? '上传中...' : '上传 PDF'}
+              {uploading ? '上传中...' : '上传文件'}
             </button>
             <Link to="/search" className={styles.secondaryAction}>检索论文</Link>
             <Link to="/chat" className={styles.secondaryAction}>跨论文问答</Link>

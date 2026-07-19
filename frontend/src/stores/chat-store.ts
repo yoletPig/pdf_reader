@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import { AgentRunEvent } from '../api/agent-runs'
+import { AgentRunEvent, RetrievalDebugResponse } from '../api/agent-runs'
 
 interface Message {
   id: string
@@ -24,6 +24,7 @@ interface Message {
     }
   }
   events?: AgentRunEvent[]
+  retrievalDebug?: RetrievalDebugResponse
   timestamp: number
 }
 

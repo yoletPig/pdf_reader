@@ -114,6 +114,12 @@
   border-top: 1px solid var(--color-border);
 }
 
+.panelActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .eventsToggle {
   border: 1px solid var(--color-border);
   background: var(--color-bg);
@@ -147,6 +153,68 @@
 .eventSummary {
   color: var(--color-text-tertiary);
   word-break: break-word;
+}
+
+.retrievalList {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.retrievalHeader {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.retrievalCard {
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+
+.retrievalMeta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.retrievalSection {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.retrievalText {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.retrievalScores {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.retrievalScores span {
+  padding: 2px 8px;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
 }
 
 .sourcesTitle {

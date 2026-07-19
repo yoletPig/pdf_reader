@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.paper import Paper
-from app.api.papers import _paper_to_dict, create_paper_from_pdf_bytes
+from app.api.papers import _paper_to_dict, create_paper_from_pdf_bytes, create_paper_from_source
 from app.utils.text_utils import extract_arxiv_id
 
 router = APIRouter(prefix="/api/search", tags=["论文检索"])
@@ -327,16 +327,15 @@ async def import_paper(data: dict, db: AsyncSession = Depends(get_db)):
         if existing:
             return {"message": "论文已存在", "paper_id": existing.id, "paper": _paper_to_dict(existing)}
 
-        pdf_content, resolved_pdf_url = await _download_pdf_from_url(normalized_url)
-        paper = await create_paper_from_pdf_bytes(
+        paper = await create_paper_from_source(
             db,
-            filename=_guess_filename_from_url(resolved_pdf_url),
-            content=pdf_content,
+            filename=_guess_filename_from_url(normalized_url, "paper"),
+            source_ref=normalized_url,
             source="url",
             source_id=normalized_url,
+            source_url=normalized_url,
             extra_pdf_metadata={
                 "import_url": normalized_url,
-                "resolved_pdf_url": resolved_pdf_url,
             },
         )
         return {"message": "导入成功", "paper_id": paper["id"], "paper": paper}

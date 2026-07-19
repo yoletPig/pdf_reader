@@ -20,7 +20,7 @@ class ServiceLocator:
         """自动注入所有服务间的依赖关系"""
         from app.services.llm import llm_router
         from app.services.translation import translation_service
-        from app.services.pdf import pdf_service
+        from app.services.pdf.service import pdf_service
 
         translation_service.set_llm_router(llm_router)
 
