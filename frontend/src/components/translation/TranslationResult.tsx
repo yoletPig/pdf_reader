@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { preprocessMarkdown } from '../../utils/markdown'
 import styles from './TranslationResult.module.css'
 
 interface TranslationResultProps {
@@ -56,7 +57,7 @@ export default function TranslationResult({
 
       <div className={styles.markdown}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
-          {translatedText}
+          {preprocessMarkdown(translatedText)}
         </ReactMarkdown>
       </div>
     </div>

@@ -563,6 +563,21 @@
   line-height: 1.6;
 }
 
+.saveMessage {
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(248, 250, 252, 0.96);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.editedBadge {
+  color: #0f766e;
+  font-weight: 700;
+}
+
 .sourceText,
 .selectionScroll {
   overflow: auto;
@@ -580,6 +595,77 @@
 
 .sourceText {
   max-height: 360px;
+}
+
+.editStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.translationEditor,
+.notesEditor {
+  width: 100%;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.98);
+  color: var(--color-text);
+  line-height: 1.75;
+  resize: vertical;
+  outline: none;
+}
+
+.translationEditor:focus,
+.notesEditor:focus {
+  border-color: rgba(37, 99, 235, 0.55);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.translationEditor {
+  min-height: 460px;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.editorLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notesEditor {
+  min-height: 110px;
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.noteBox {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(20, 184, 166, 0.25);
+  background: rgba(240, 253, 250, 0.7);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.noteBox strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #0f766e;
+  font-size: 12px;
+}
+
+.noteBox p {
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .selectionScroll {

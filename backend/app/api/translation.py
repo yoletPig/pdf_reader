@@ -3,6 +3,7 @@ import traceback
 import hashlib
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 import fitz
 from fastapi import APIRouter, HTTPException, Depends
@@ -48,7 +49,11 @@ def _serialize_cache_row(row: TranslationCache | None) -> dict | None:
         "completion_tokens": row.completion_tokens,
         "source_text_length": row.source_text_length,
         "translated_text_length": row.translated_text_length,
+        "edited_by_user": row.edited_by_user,
+        "edited_at": row.edited_at.isoformat() if row.edited_at else None,
+        "user_notes": row.user_notes,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -514,6 +519,9 @@ async def _upsert_translation_cache(
     completion_tokens: int = 0,
     source_text_length: int = 0,
     translated_text_length: int = 0,
+    edited_by_user: bool = False,
+    edited_at: datetime | None = None,
+    user_notes: str | None = None,
 ) -> None:
     existing = (
         await db.execute(
@@ -534,6 +542,11 @@ async def _upsert_translation_cache(
         existing.completion_tokens = completion_tokens
         existing.source_text_length = source_text_length
         existing.translated_text_length = translated_text_length
+        existing.edited_by_user = edited_by_user
+        existing.edited_at = edited_at
+        existing.updated_at = datetime.utcnow()
+        if user_notes is not None:
+            existing.user_notes = user_notes
     else:
         db.add(
             TranslationCache(
@@ -549,6 +562,10 @@ async def _upsert_translation_cache(
                 completion_tokens=completion_tokens,
                 source_text_length=source_text_length,
                 translated_text_length=translated_text_length,
+                edited_by_user=edited_by_user,
+                edited_at=edited_at,
+                user_notes=user_notes or "",
+                updated_at=datetime.utcnow(),
             )
         )
 
@@ -790,6 +807,9 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 "source_text_length": 0,
                 "translated_text_length": 0,
                 "retry_count": 0,
+                "edited_by_user": False,
+                "edited_at": None,
+                "user_notes": "",
             }
 
         translated_path = _paper_translation_page_path(paper_id, mode.value, page_number)
@@ -838,7 +858,10 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             not force
             and translated_path.exists()
             and existing
-            and (existing.original_text or "").strip() == translation_source.strip()
+            and (
+                bool(existing.edited_by_user)
+                or (existing.original_text or "").strip() == translation_source.strip()
+            )
         ):
             translated_markdown = translated_path.read_text(encoding="utf-8")
             logger.info(
@@ -870,6 +893,9 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 "source_text_length": existing.source_text_length if existing else len(translation_source),
                 "translated_text_length": existing.translated_text_length if existing else len(translated_markdown),
                 "retry_count": 0,
+                "edited_by_user": existing.edited_by_user if existing else False,
+                "edited_at": existing.edited_at.isoformat() if existing and existing.edited_at else None,
+                "user_notes": existing.user_notes if existing else "",
             }
         if not force and translated_path.exists():
             logger.warning(
@@ -971,6 +997,9 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             "source_text_length": result.source_text_length,
             "translated_text_length": len(translated_markdown),
             "retry_count": result.retry_count,
+            "edited_by_user": False,
+            "edited_at": None,
+            "user_notes": existing.user_notes if existing else "",
         }
     except TranslationQualityError as e:
         logger.error(
@@ -998,6 +1027,105 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/page")
+async def update_translated_page(data: dict, db: AsyncSession = Depends(get_db)):
+    """保存用户手动修订后的页级译文，不调用 LLM。"""
+    paper_id = data.get("paper_id", "")
+    page_number = max(1, int(data.get("page_number", 1) or 1))
+    mode = data.get("mode", "quick")
+    translated_markdown = data.get("translated_markdown", "")
+    notes_provided = "user_notes" in data
+    user_notes = data.get("user_notes", "") if notes_provided else None
+
+    if not paper_id:
+        raise HTTPException(status_code=400, detail="缺少 paper_id")
+    if mode not in {"quick", "polish"}:
+        raise HTTPException(status_code=400, detail="无效翻译模式")
+    if not isinstance(translated_markdown, str) or not translated_markdown.strip():
+        raise HTTPException(status_code=400, detail="译文不能为空")
+
+    paper = await _load_paper_or_404(db, paper_id)
+    page_source = await _load_page_source(db, paper_id, page_number)
+    pymupdf_text = _extract_pdf_page_text_with_pymupdf(getattr(paper, "file_path", "") or "", page_number)
+    current_page_text, _ = _pick_current_page_text(
+        pymupdf_text=pymupdf_text,
+        docling_text=page_source.get("text") or "",
+        docling_markdown=page_source.get("markdown") or "",
+    )
+    translation_source = f"<!-- page:{page_number} -->\n\n{current_page_text}" if current_page_text else ""
+    block_id = f"page-{page_number}-{mode}"
+    existing = (
+        await db.execute(
+            select(TranslationCache).where(
+                TranslationCache.paper_id == paper_id,
+                TranslationCache.block_id == block_id,
+                TranslationCache.mode == mode,
+            )
+        )
+    ).scalar_one_or_none()
+    original_text = existing.original_text if existing and existing.original_text else translation_source
+    edited_at = datetime.utcnow()
+
+    translated_markdown_path = _persist_translated_markdown(
+        paper_id,
+        mode,
+        page_number,
+        translated_markdown,
+    )
+    await _upsert_translation_cache(
+        db,
+        paper_id=paper_id,
+        block_id=block_id,
+        original_text=original_text,
+        translated_text=translated_markdown,
+        mode=mode,
+        model_used=existing.model_used if existing else "",
+        finish_reason=existing.finish_reason if existing else "user_edit",
+        prompt_tokens=existing.prompt_tokens if existing else 0,
+        completion_tokens=existing.completion_tokens if existing else 0,
+        source_text_length=len(original_text or ""),
+        translated_text_length=len(translated_markdown),
+        edited_by_user=True,
+        edited_at=edited_at,
+        user_notes=user_notes if notes_provided else (existing.user_notes if existing else ""),
+    )
+    await db.commit()
+    logger.info(
+        "页译文人工修订已保存: paper_id=%s page=%s mode=%s translated_len=%s translated_sha=%s notes_len=%s path=%s",
+        paper_id,
+        page_number,
+        mode,
+        len(translated_markdown or ""),
+        _text_digest(translated_markdown or ""),
+        len((user_notes if notes_provided else (existing.user_notes if existing else "")) or ""),
+        translated_markdown_path,
+    )
+
+    return {
+        "paper_id": paper_id,
+        "page_number": page_number,
+        "mode": mode,
+        "exists": True,
+        "source_text": current_page_text,
+        "source_markdown": page_source.get("markdown") or "",
+        "translated_markdown": translated_markdown,
+        "translated_markdown_path": translated_markdown_path,
+        "previous_summary": _build_previous_summary(paper_id, mode, page_number),
+        "from_cache": True,
+        "model_used": existing.model_used if existing else "",
+        "tokens_used": 0,
+        "finish_reason": existing.finish_reason if existing else "user_edit",
+        "prompt_tokens": existing.prompt_tokens if existing else 0,
+        "completion_tokens": existing.completion_tokens if existing else 0,
+        "source_text_length": len(original_text or ""),
+        "translated_text_length": len(translated_markdown),
+        "retry_count": 0,
+        "edited_by_user": True,
+        "edited_at": edited_at.isoformat(),
+        "user_notes": user_notes if notes_provided else (existing.user_notes if existing else ""),
+    }
 
 
 @router.get("/page")
@@ -1035,20 +1163,24 @@ async def get_translated_page(
         )
     ).scalar_one_or_none()
     translation_source = f"<!-- page:{page_number} -->\n\n{current_page_text}" if current_page_text else ""
-    has_current_translation = (
-        translated_path.exists()
-        and existing is not None
+    source_matches_cache = (
+        existing is not None
         and bool(translation_source)
         and (existing.original_text or "").strip() == translation_source.strip()
     )
+    has_persisted_translation = translated_path.exists() and (
+        existing is not None or bool(translated_path.read_text(encoding="utf-8").strip())
+    )
     logger.info(
-        "读取页译文: paper_id=%s page=%s mode=%s exists=%s path_exists=%s has_db_cache=%s current_source_len=%s current_source_sha=%s cached_source_sha=%s translated_len=%s",
+        "读取页译文: paper_id=%s page=%s mode=%s exists=%s path_exists=%s has_db_cache=%s source_matches_cache=%s edited_by_user=%s current_source_len=%s current_source_sha=%s cached_source_sha=%s translated_len=%s",
         paper_id,
         page_number,
         mode,
-        has_current_translation,
+        has_persisted_translation,
         translated_path.exists(),
         bool(existing),
+        source_matches_cache,
+        bool(existing.edited_by_user) if existing else False,
         len(translation_source or ""),
         _text_digest(translation_source or ""),
         _text_digest(existing.original_text if existing else ""),
@@ -1058,13 +1190,13 @@ async def get_translated_page(
         "paper_id": paper_id,
         "page_number": page_number,
         "mode": mode,
-        "exists": has_current_translation,
+        "exists": has_persisted_translation,
         "source_text": current_page_text,
         "source_markdown": repaired_markdown,
-        "translated_markdown": translated_path.read_text(encoding="utf-8") if has_current_translation else "",
-        "translated_markdown_path": str(translated_path) if has_current_translation else "",
+        "translated_markdown": translated_path.read_text(encoding="utf-8") if has_persisted_translation else "",
+        "translated_markdown_path": str(translated_path) if has_persisted_translation else "",
         "previous_summary": _build_previous_summary(paper_id, mode, page_number),
-        "from_cache": has_current_translation,
+        "from_cache": has_persisted_translation,
         "model_used": existing.model_used if existing else "",
         "tokens_used": 0,
         "finish_reason": existing.finish_reason if existing else "",
@@ -1072,9 +1204,13 @@ async def get_translated_page(
         "completion_tokens": existing.completion_tokens if existing else 0,
         "source_text_length": existing.source_text_length if existing else len(repaired_markdown),
         "translated_text_length": existing.translated_text_length if existing else (
-            len(translated_path.read_text(encoding="utf-8")) if has_current_translation else 0
+            len(translated_path.read_text(encoding="utf-8")) if has_persisted_translation else 0
         ),
         "retry_count": 0,
+        "edited_by_user": existing.edited_by_user if existing else False,
+        "edited_at": existing.edited_at.isoformat() if existing and existing.edited_at else None,
+        "user_notes": existing.user_notes if existing else "",
+        "source_matches_cache": source_matches_cache,
         "document_type": getattr(paper, "document_type", "document"),
         "block_count": (
             await db.execute(

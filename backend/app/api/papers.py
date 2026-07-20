@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
+import fitz
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,14 @@ _PLACEHOLDER_ABSTRACT_PATTERNS = (
     re.compile(r"^文件大小:\s*\d+\s*bytes$", re.IGNORECASE),
     re.compile(r"^PDF 解析失败:", re.IGNORECASE),
 )
+
+_LIGATURE_MAP = {
+    "ﬀ": "ff",
+    "ﬁ": "fi",
+    "ﬂ": "fl",
+    "ﬃ": "ffi",
+    "ﬄ": "ffl",
+}
 
 
 def _safe_json_loads(value: str, fallback):
@@ -96,7 +105,10 @@ def _sync_memory_store(paper_data: dict):
 
 
 def _normalize_inline_text(value: str | None) -> str:
-    return re.sub(r"\s+", " ", (value or "").replace("\x00", " ")).strip(" \t\r\n-_")
+    text = (value or "").replace("\x00", " ")
+    for source, target in _LIGATURE_MAP.items():
+        text = text.replace(source, target)
+    return re.sub(r"\s+", " ", text).strip(" \t\r\n-_")
 
 
 def _default_title_from_path(file_path: str) -> str:
@@ -129,6 +141,13 @@ def _is_placeholder_title(title: str | None, file_path: str) -> bool:
     return bool(fallback and normalized.lower() == fallback.lower())
 
 
+def _is_placeholder_authors(value: str | None) -> bool:
+    parsed = _safe_json_loads(value or "[]", [])
+    if isinstance(parsed, list):
+        return not any(_normalize_inline_text(str(author)) for author in parsed)
+    return not _normalize_inline_text(value)
+
+
 def _looks_like_heading(text: str) -> bool:
     candidate = _normalize_inline_text(text)
     if not candidate:
@@ -140,6 +159,13 @@ def _looks_like_heading(text: str) -> bool:
     if re.match(r"^([1I]|[A-Z])[\.\)]\s+[A-Z]", candidate):
         return True
     return candidate.isupper() and 1 <= len(candidate.split()) <= 8
+
+
+def _looks_like_metadata_noise(text: str) -> bool:
+    candidate = _normalize_inline_text(text)
+    if not candidate:
+        return True
+    return bool(re.search(r"\b(arxiv|doi|issn|isbn)\b", candidate, re.IGNORECASE))
 
 
 def _extract_first_page_lines(page) -> list[dict]:
@@ -171,10 +197,18 @@ def _extract_title_from_lines(lines: list[dict], page_height: float, fallback_ti
     if not lines:
         return fallback_title
 
-    max_size = max((line["size"] for line in lines), default=0.0)
+    usable_lines = [
+        line for line in lines
+        if not _looks_like_metadata_noise(line["text"])
+        and (line["y1"] - line["y0"]) <= max(line["size"] * 2.5, 24.0)
+    ]
+    if not usable_lines:
+        return fallback_title
+
+    max_size = max((line["size"] for line in usable_lines), default=0.0)
     threshold = max(max_size * 0.9, 12.0)
     candidates = [
-        line for line in lines
+        line for line in usable_lines
         if line["size"] >= threshold
         and line["y0"] <= page_height * 0.38
         and len(line["text"]) >= 6
@@ -182,7 +216,7 @@ def _extract_title_from_lines(lines: list[dict], page_height: float, fallback_ti
     ]
     if not candidates:
         candidates = [
-            line for line in lines
+            line for line in usable_lines
             if line["size"] >= max(max_size * 0.82, 11.0)
             and line["y0"] <= page_height * 0.32
             and len(line["text"]) >= 6
@@ -244,6 +278,83 @@ def _extract_abstract_from_lines(lines: list[dict]) -> str:
     return abstract[:max_chars]
 
 
+def _extract_authors_from_lines(lines: list[dict], title: str) -> list[str]:
+    if not lines:
+        return []
+
+    title_words = set(re.findall(r"[A-Za-z0-9]+", title.lower()))
+    candidates: list[str] = []
+    title_seen = False
+    for line in lines[:18]:
+        text = _normalize_inline_text(line["text"])
+        if not text:
+            continue
+        lower_text = text.lower()
+        line_words = set(re.findall(r"[A-Za-z0-9]+", lower_text))
+        if not title_seen and title_words and len(title_words & line_words) >= max(2, min(5, len(title_words) // 2)):
+            title_seen = True
+            continue
+        if not title_seen:
+            continue
+        if re.match(r"^(abstract|keywords?|index terms?)\b", text, re.IGNORECASE):
+            break
+        if "@" in text or re.search(r"\b(university|institute|laborator|robotics|school|department|college|corp|inc)\b", lower_text):
+            continue
+        if re.search(r"\d{4}|\b(arxiv|http|www)\b", lower_text):
+            continue
+        if "," in text or re.search(r"\band\b", text, re.IGNORECASE):
+            cleaned = re.sub(r"[*⋆†‡§¶]+", "", text)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;")
+            if cleaned:
+                candidates.append(cleaned)
+                break
+
+    if not candidates:
+        return []
+
+    raw = candidates[0].replace(" and ", ", ")
+    authors = [_normalize_inline_text(item) for item in raw.split(",")]
+    return [author for author in authors if author and len(author) <= 120]
+
+
+def _extract_pdf_first_page_metadata(source_ref: str, fallback_title: str) -> dict:
+    result = {
+        "title": "",
+        "abstract": "",
+        "authors": [],
+        "page_count": 0,
+        "pdf_metadata": {},
+    }
+    if not source_ref or "://" in source_ref or not source_ref.lower().endswith(".pdf"):
+        return result
+
+    try:
+        with fitz.open(source_ref) as doc:
+            result["page_count"] = len(doc)
+            result["pdf_metadata"] = {
+                key: str(value)
+                for key, value in (doc.metadata or {}).items()
+                if value not in (None, "")
+            }
+            if not doc:
+                return result
+            first_page = doc[0]
+            lines = _extract_first_page_lines(first_page)
+            page_height = float(first_page.rect.height)
+            title = _extract_title_from_lines(lines, page_height, fallback_title)
+            abstract = _extract_abstract_from_lines(lines)
+            authors = _extract_authors_from_lines(lines, title)
+            result.update({
+                "title": title,
+                "abstract": abstract,
+                "authors": authors,
+            })
+    except Exception:
+        return result
+
+    return result
+
+
 def _extract_document_metadata(
     source_ref: str,
     fallback_title: str,
@@ -255,11 +366,13 @@ def _extract_document_metadata(
     extracted = {
         "title": fallback_title,
         "abstract": "",
+        "authors": [],
         "page_count": 0,
         "document_type": "document",
         "pdf_metadata": {},
         "markdown": "",
     }
+    pdf_fallback = _extract_pdf_first_page_metadata(source_ref, fallback_title)
     try:
         extraction = docling_service.extract(
             source_ref,
@@ -267,16 +380,25 @@ def _extract_document_metadata(
             artifact_dir=artifact_dir,
             asset_url_prefix=asset_url_prefix,
         )
-        extracted["title"] = _normalize_inline_text(extraction.title) or fallback_title
-        extracted["abstract"] = _normalize_inline_text(extraction.abstract)
-        extracted["page_count"] = extraction.page_count
+        docling_title = _normalize_inline_text(extraction.title)
+        docling_abstract = _normalize_inline_text(extraction.abstract)
+        extracted["title"] = (
+            docling_title
+            if docling_title and not _is_placeholder_title(docling_title, source_ref)
+            else (pdf_fallback["title"] or fallback_title)
+        )
+        extracted["abstract"] = docling_abstract or pdf_fallback["abstract"]
+        extracted["authors"] = pdf_fallback["authors"]
+        extracted["page_count"] = extraction.page_count or pdf_fallback["page_count"]
         extracted["document_type"] = extraction.source_type
         extracted["markdown"] = extraction.markdown
         extracted["pdf_metadata"] = {
+            **pdf_fallback["pdf_metadata"],
             **(extraction.metadata or {}),
             "detected_title": extracted["title"],
             "source_ref": source_ref,
             "document_type": extraction.source_type,
+            "detected_authors": extracted["authors"],
             "page_sources": [
                 {
                     "page_number": page.page_number,
@@ -288,6 +410,19 @@ def _extract_document_metadata(
         }
         return extracted
     except Exception:
+        if pdf_fallback["title"]:
+            extracted["title"] = pdf_fallback["title"]
+        extracted["abstract"] = pdf_fallback["abstract"]
+        extracted["authors"] = pdf_fallback["authors"]
+        extracted["page_count"] = pdf_fallback["page_count"]
+        extracted["document_type"] = "pdf" if source_ref.lower().endswith(".pdf") else "document"
+        extracted["pdf_metadata"] = {
+            **pdf_fallback["pdf_metadata"],
+            "detected_title": extracted["title"],
+            "detected_authors": extracted["authors"],
+            "source_ref": source_ref,
+            "document_type": extracted["document_type"],
+        }
         return extracted
 
 
@@ -302,6 +437,7 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
 
     needs_refresh = (
         _is_placeholder_title(paper.title, source_ref)
+        or _is_placeholder_authors(paper.authors)
         or _is_placeholder_abstract(paper.abstract)
         or paper.page_count <= 0
         or not _safe_json_loads(paper.pdf_metadata_json, {})
@@ -309,14 +445,25 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
     if not needs_refresh:
         return False
 
-    try:
-        extracted = _extract_document_metadata(source_ref, _default_title_from_path(source_ref))
-    except Exception:
-        return False
+    fallback_title = _default_title_from_path(source_ref)
+    extracted = _extract_pdf_first_page_metadata(source_ref, fallback_title)
+    has_lightweight_metadata = any([
+        extracted.get("title"),
+        extracted.get("abstract"),
+        extracted.get("authors"),
+        extracted.get("page_count"),
+        extracted.get("pdf_metadata"),
+    ])
+    if not has_lightweight_metadata:
+        try:
+            extracted = _extract_document_metadata(source_ref, fallback_title)
+        except Exception:
+            return False
 
     changed = False
     detected_title = extracted["title"]
     detected_abstract = extracted["abstract"]
+    detected_authors = extracted.get("authors") or []
     detected_metadata = extracted["pdf_metadata"]
     detected_page_count = extracted["page_count"]
 
@@ -326,6 +473,10 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
 
     if detected_abstract and detected_abstract != (paper.abstract or ""):
         paper.abstract = detected_abstract
+        changed = True
+
+    if detected_authors and _is_placeholder_authors(paper.authors):
+        paper.authors = json.dumps(detected_authors, ensure_ascii=False)
         changed = True
 
     if detected_page_count and detected_page_count != (paper.page_count or 0):
@@ -338,6 +489,9 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
         changed = True
     if extracted.get("document_type") and extracted["document_type"] != getattr(paper, "document_type", ""):
         paper.document_type = extracted["document_type"]
+        changed = True
+    elif source_ref.lower().endswith(".pdf") and getattr(paper, "document_type", "") != "pdf":
+        paper.document_type = "pdf"
         changed = True
 
     return changed
@@ -379,6 +533,7 @@ async def create_paper_from_source(
 
     detected_title = fallback_title
     detected_abstract = ""
+    detected_authors: list[str] = []
     page_count = 0
     document_type = "document"
     pdf_metadata: dict[str, str] = {}
@@ -394,6 +549,7 @@ async def create_paper_from_source(
         )
         detected_title = extracted["title"] or fallback_title
         detected_abstract = extracted["abstract"]
+        detected_authors = extracted.get("authors") or []
         page_count = extracted["page_count"]
         document_type = extracted.get("document_type", "document")
         pdf_metadata = extracted["pdf_metadata"]
@@ -418,12 +574,15 @@ async def create_paper_from_source(
 
     final_title = _normalize_inline_text(title) or detected_title or fallback_title
     final_abstract = _normalize_inline_text(abstract) or detected_abstract
+    final_authors = authors if authors is not None else detected_authors
     merged_pdf_metadata = {
         **pdf_metadata,
         **(extra_pdf_metadata or {}),
     }
     if final_title:
         merged_pdf_metadata.setdefault("detected_title", final_title)
+    if final_authors:
+        merged_pdf_metadata.setdefault("detected_authors", final_authors)
     if resolved_source_url:
         merged_pdf_metadata.setdefault("source_url", resolved_source_url)
 
@@ -440,7 +599,7 @@ async def create_paper_from_source(
     paper_data = {
         "id": paper_id,
         "title": final_title,
-        "authors": json.dumps(authors or [], ensure_ascii=False),
+        "authors": json.dumps(final_authors or [], ensure_ascii=False),
         "abstract": final_abstract,
         "year": year if year is not None else (datetime.utcnow().year if source == "local" else None),
         "source": source,
@@ -792,6 +951,12 @@ async def list_papers(
 
         result = await db.execute(stmt)
         papers = result.scalars().all()
+        refreshed = False
+        for paper in papers:
+            if await _refresh_paper_metadata_if_needed(db, paper):
+                refreshed = True
+        if refreshed:
+            await db.commit()
         serialized_papers = [_paper_to_dict(p) for p in papers]
         for paper_data in serialized_papers:
             _sync_memory_store(paper_data)
@@ -917,6 +1082,9 @@ async def get_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
         result = await db.execute(select(Paper).where(Paper.id == paper_id))
         paper = result.scalar_one_or_none()
         if paper:
+            if await _refresh_paper_metadata_if_needed(db, paper):
+                await db.commit()
+                await db.refresh(paper)
             paper_data = _paper_to_dict(paper)
             _sync_memory_store(paper_data)
             return paper_data

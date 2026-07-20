@@ -1,7 +1,7 @@
 """翻译缓存模型"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, Text, Integer
+from sqlalchemy import String, DateTime, Text, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import ForeignKey
 from app.database import Base
@@ -23,7 +23,11 @@ class TranslationCache(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     source_text_length: Mapped[int] = mapped_column(Integer, default=0)
     translated_text_length: Mapped[int] = mapped_column(Integer, default=0)
+    edited_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    user_notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # 关系
     paper: Mapped["Paper"] = relationship("Paper", back_populates="translation_caches")

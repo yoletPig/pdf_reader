@@ -40,6 +40,14 @@ export interface TranslatePageRequest {
   pdfjs_text?: string
 }
 
+export interface UpdateTranslatedPageRequest {
+  paper_id: string
+  page_number: number
+  mode: 'quick' | 'polish'
+  translated_markdown: string
+  user_notes?: string
+}
+
 export interface TranslatePageResponse {
   paper_id: string
   page_number: number
@@ -53,6 +61,10 @@ export interface TranslatePageResponse {
   from_cache: boolean
   model_used?: string
   tokens_used?: number
+  edited_by_user?: boolean
+  edited_at?: string | null
+  user_notes?: string
+  source_matches_cache?: boolean
 }
 
 export const translationApi = {
@@ -70,4 +82,6 @@ export const translationApi = {
     }),
   translatePage: (data: TranslatePageRequest) =>
     apiClient.post<TranslatePageResponse>('/translate/page', data),
+  updateTranslatedPage: (data: UpdateTranslatedPageRequest) =>
+    apiClient.put<TranslatePageResponse>('/translate/page', data),
 }

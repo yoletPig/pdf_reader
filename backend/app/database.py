@@ -71,6 +71,10 @@ def _apply_lightweight_migrations(sync_conn):
             "completion_tokens": "ALTER TABLE translation_cache ADD COLUMN completion_tokens INTEGER DEFAULT 0",
             "source_text_length": "ALTER TABLE translation_cache ADD COLUMN source_text_length INTEGER DEFAULT 0",
             "translated_text_length": "ALTER TABLE translation_cache ADD COLUMN translated_text_length INTEGER DEFAULT 0",
+            "edited_by_user": "ALTER TABLE translation_cache ADD COLUMN edited_by_user BOOLEAN DEFAULT 0",
+            "edited_at": "ALTER TABLE translation_cache ADD COLUMN edited_at DATETIME",
+            "user_notes": "ALTER TABLE translation_cache ADD COLUMN user_notes TEXT DEFAULT ''",
+            "updated_at": "ALTER TABLE translation_cache ADD COLUMN updated_at DATETIME",
         }
         for column, sql in migrations.items():
             if column not in translation_columns:

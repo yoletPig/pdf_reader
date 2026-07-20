@@ -11,6 +11,7 @@ import { papersApi, Paper } from '../../api/papers'
 import { translationApi } from '../../api/translation'
 import { usePDFStore } from '../../stores/pdf-store'
 import { useTranslationStore } from '../../stores/translation-store'
+import { preprocessMarkdown } from '../../utils/markdown'
 import styles from './ReaderPage.module.css'
 
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -28,6 +29,9 @@ type PageDocument = {
   markdown: string
   sourceText: string
   modelUsed?: string
+  editedByUser?: boolean
+  editedAt?: string | null
+  userNotes?: string
 }
 
 type PageSource = {
@@ -167,23 +171,6 @@ function normalizePageText(text: string) {
   return merged.join('\n\n')
 }
 
-function preprocessMarkdown(text: string) {
-  return text
-    .replace(/\\\[((?:.|\n)*?)\\\]/g, '\n$$\n$1\n$$\n')
-    .replace(
-      /\\begin\{([a-zA-Z*]+)\}[\s\S]*?\\end\{\1\}(?:\s*\\tag\{[^}]+\})?/g,
-      (match, _env, offset: number, source: string) => {
-        const before = source.slice(Math.max(0, offset - 3), offset)
-        const after = source.slice(offset + match.length, offset + match.length + 3)
-        if (before.includes('$$') || after.includes('$$')) {
-          return match
-        }
-        return `\n$$\n${String(match).trim()}\n$$\n`
-      },
-    )
-    .replace(/\\\((.+?)\\\)/g, (_, expr) => `$${String(expr).trim()}$`)
-}
-
 type MarkdownImageToken = {
   token: string
   markdown: string
@@ -262,7 +249,12 @@ export default function ReaderPage() {
   const [isDebugOpen, setIsDebugOpen] = useState(false)
   const [isQaLoading, setIsQaLoading] = useState(false)
   const [isPageTranslating, setIsPageTranslating] = useState(false)
+  const [isSavingPageTranslation, setIsSavingPageTranslation] = useState(false)
   const [isSelectionTranslating, setIsSelectionTranslating] = useState(false)
+  const [isEditingPageTranslation, setIsEditingPageTranslation] = useState(false)
+  const [pageTranslationDraft, setPageTranslationDraft] = useState('')
+  const [pageNotesDraft, setPageNotesDraft] = useState('')
+  const [pageEditMessage, setPageEditMessage] = useState('')
   const [showFullSource, setShowFullSource] = useState(true)
   const [isAutoFullTranslateEnabled, setIsAutoFullTranslateEnabled] = useState(false)
   const [isAutoTranslating, setIsAutoTranslating] = useState(false)
@@ -314,6 +306,11 @@ export default function ReaderPage() {
     setIsAutoFullTranslateEnabled(false)
     setIsAutoTranslating(false)
     setIsRefreshingSummary(false)
+    setIsEditingPageTranslation(false)
+    setIsSavingPageTranslation(false)
+    setPageTranslationDraft('')
+    setPageNotesDraft('')
+    setPageEditMessage('')
     setIsToolPaneCollapsed(false)
     setAutoTranslateProgress({ completed: 0, total: 0, failedPages: [] })
     autoTranslateRunRef.current += 1
@@ -426,6 +423,13 @@ export default function ReaderPage() {
       translation: Number(((columnWidths[1] / total) * 100).toFixed(2)),
     }
   }, [columnWidths, isToolPaneCollapsed])
+
+  useEffect(() => {
+    setIsEditingPageTranslation(false)
+    setPageTranslationDraft(currentPageDocument?.markdown || '')
+    setPageNotesDraft(currentPageDocument?.userNotes || '')
+    setPageEditMessage('')
+  }, [pageDocKey, currentPageDocument?.markdown, currentPageDocument?.userNotes])
 
   useEffect(() => {
     setShowFullSource(!currentPageDocument?.markdown)
@@ -642,6 +646,9 @@ export default function ReaderPage() {
         markdown: res.data.translated_markdown,
         sourceText: res.data.source_text || pageTextsRef.current[pageNumber] || '',
         modelUsed: res.data.model_used,
+        editedByUser: Boolean(res.data.edited_by_user),
+        editedAt: res.data.edited_at,
+        userNotes: res.data.user_notes || '',
       }
       setPageDocuments((prev) => ({
         ...prev,
@@ -696,6 +703,9 @@ export default function ReaderPage() {
           markdown: res.data.translated_markdown,
           sourceText: res.data.source_text || '',
           modelUsed: res.data.model_used,
+          editedByUser: Boolean(res.data.edited_by_user),
+          editedAt: res.data.edited_at,
+          userNotes: res.data.user_notes || '',
         }
         setPageDocuments((prev) => ({
           ...prev,
@@ -715,6 +725,43 @@ export default function ReaderPage() {
       return await task
     } finally {
       pendingTranslationTasksRef.current.delete(key)
+    }
+  }
+
+  const handleSavePageTranslation = async () => {
+    if (!id || !pageDocKey || !pageTranslationDraft.trim()) return
+
+    setIsSavingPageTranslation(true)
+    setPageEditMessage('')
+    try {
+      const res = await translationApi.updateTranslatedPage({
+        paper_id: id,
+        page_number: currentPage,
+        mode: currentMode,
+        translated_markdown: pageTranslationDraft,
+        user_notes: pageNotesDraft,
+      })
+      const nextDocument = {
+        markdown: res.data.translated_markdown,
+        sourceText: res.data.source_text || currentPageDocument?.sourceText || currentPageText || '',
+        modelUsed: res.data.model_used || currentPageDocument?.modelUsed,
+        editedByUser: Boolean(res.data.edited_by_user),
+        editedAt: res.data.edited_at,
+        userNotes: res.data.user_notes || '',
+      }
+      setPageDocuments((prev) => ({
+        ...prev,
+        [pageDocKey]: nextDocument,
+      }))
+      setPageTranslationDraft(nextDocument.markdown)
+      setPageNotesDraft(nextDocument.userNotes || '')
+      setIsEditingPageTranslation(false)
+      setPageEditMessage('人工修订已保存。')
+    } catch (saveError: any) {
+      console.error('保存人工修订译文失败:', saveError)
+      setPageEditMessage(saveError?.response?.data?.detail || '保存失败，请稍后重试。')
+    } finally {
+      setIsSavingPageTranslation(false)
     }
   }
 
@@ -1030,6 +1077,7 @@ export default function ReaderPage() {
               <span>第 {currentPage} 页</span>
               <span>{currentMode === 'quick' ? '快速模式' : '严谨模式'}</span>
               {currentPageDocument?.modelUsed ? <span>{currentPageDocument.modelUsed}</span> : null}
+              {currentPageDocument?.editedByUser ? <span className={styles.editedBadge}>人工修订</span> : null}
             </div>
           </div>
           {isPageTranslating ? (
@@ -1038,9 +1086,77 @@ export default function ReaderPage() {
               <p>正在生成 Markdown 翻译...</p>
             </div>
           ) : currentPageDocument?.markdown ? (
-            <div className={styles.markdownWrap}>
-              <MarkdownBlock content={currentPageDocument.markdown} />
-            </div>
+            <>
+              <div className={styles.inlineActions}>
+                {isEditingPageTranslation ? (
+                  <>
+                    <button
+                      className={styles.primaryAction}
+                      onClick={() => void handleSavePageTranslation()}
+                      disabled={isSavingPageTranslation || !pageTranslationDraft.trim()}
+                    >
+                      {isSavingPageTranslation ? '保存中...' : '保存修订'}
+                    </button>
+                    <button
+                      className={styles.secondaryAction}
+                      onClick={() => {
+                        setIsEditingPageTranslation(false)
+                        setPageTranslationDraft(currentPageDocument.markdown)
+                        setPageNotesDraft(currentPageDocument.userNotes || '')
+                        setPageEditMessage('')
+                      }}
+                      disabled={isSavingPageTranslation}
+                    >
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className={styles.secondaryAction}
+                    onClick={() => {
+                      setPageTranslationDraft(currentPageDocument.markdown)
+                      setPageNotesDraft(currentPageDocument.userNotes || '')
+                      setIsEditingPageTranslation(true)
+                      setPageEditMessage('')
+                    }}
+                  >
+                    编辑译文
+                  </button>
+                )}
+              </div>
+              {pageEditMessage ? <div className={styles.saveMessage}>{pageEditMessage}</div> : null}
+              {isEditingPageTranslation ? (
+                <div className={styles.editStack}>
+                  <textarea
+                    className={styles.translationEditor}
+                    value={pageTranslationDraft}
+                    onChange={(event) => setPageTranslationDraft(event.target.value)}
+                    spellCheck={false}
+                  />
+                  <label className={styles.editorLabel}>
+                    页级备注
+                    <textarea
+                      className={styles.notesEditor}
+                      value={pageNotesDraft}
+                      onChange={(event) => setPageNotesDraft(event.target.value)}
+                      placeholder="可记录公式修正、图片文字删除原因、阅读批注等；不会触发重新翻译。"
+                    />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <div className={styles.markdownWrap}>
+                    <MarkdownBlock content={currentPageDocument.markdown} />
+                  </div>
+                  {currentPageDocument.userNotes?.trim() ? (
+                    <div className={styles.noteBox}>
+                      <strong>页级备注</strong>
+                      <p>{currentPageDocument.userNotes}</p>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </>
           ) : (
             <div className={styles.emptyState}>
               <p>当前页还没有译文。先在右侧工具栏执行“翻译当前页”。</p>
