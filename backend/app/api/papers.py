@@ -1,4 +1,5 @@
 """论文管理 API"""
+import asyncio
 import os
 import re
 import uuid
@@ -18,11 +19,8 @@ from app.database import get_db
 from app.config import settings
 from app.models.paper import Paper
 from app.models.paper_block import PaperBlock
-from app.models.paper_chunk import PaperChunk
 from app.models.translation_cache import TranslationCache
-from app.services.docling import docling_service
 from app.services.ingestion import paper_ingestion_service
-from app.services.ingestion import vector_index_service
 from app.services.llm import LLMMessage, LLMRequest, llm_router
 
 router = APIRouter(prefix="/api/papers", tags=["论文管理"])
@@ -374,12 +372,19 @@ def _extract_document_metadata(
     }
     pdf_fallback = _extract_pdf_first_page_metadata(source_ref, fallback_title)
     try:
-        extraction = docling_service.extract(
-            source_ref,
-            paper_id=paper_id,
-            artifact_dir=artifact_dir,
-            asset_url_prefix=asset_url_prefix,
-        )
+        from app.services import settings_store
+        engine = settings_store.current_pdf_engine()
+        if engine == "docling":
+            from app.services.docling import docling_service
+            extraction = docling_service.extract(
+                source_ref,
+                paper_id=paper_id,
+                artifact_dir=artifact_dir,
+                asset_url_prefix=asset_url_prefix,
+            )
+        else:
+            from app.services.pymupdf import pymupdf_service
+            extraction = pymupdf_service.extract(source_ref, paper_id=paper_id)
         docling_title = _normalize_inline_text(extraction.title)
         docling_abstract = _normalize_inline_text(extraction.abstract)
         extracted["title"] = (
@@ -446,7 +451,7 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
         return False
 
     fallback_title = _default_title_from_path(source_ref)
-    extracted = _extract_pdf_first_page_metadata(source_ref, fallback_title)
+    extracted = await asyncio.to_thread(_extract_pdf_first_page_metadata, source_ref, fallback_title)
     has_lightweight_metadata = any([
         extracted.get("title"),
         extracted.get("abstract"),
@@ -456,7 +461,9 @@ async def _refresh_paper_metadata_if_needed(db: AsyncSession, paper: Paper) -> b
     ])
     if not has_lightweight_metadata:
         try:
-            extracted = _extract_document_metadata(source_ref, fallback_title)
+            extracted = await asyncio.to_thread(
+                _extract_document_metadata, source_ref, fallback_title
+            )
         except Exception:
             return False
 
@@ -540,7 +547,8 @@ async def create_paper_from_source(
     extracted_markdown = ""
 
     try:
-        extracted = _extract_document_metadata(
+        extracted = await asyncio.to_thread(
+            _extract_document_metadata,
             resolved_source_ref or resolved_source_url,
             fallback_title,
             paper_id=paper_id,
@@ -1014,67 +1022,6 @@ async def upload_paper(
     }
 
 
-@router.get("/chunks")
-async def list_paper_chunks(
-    paper_id: Optional[str] = None,
-    page: Optional[int] = None,
-    limit: int = 500,
-    offset: int = 0,
-    db: AsyncSession = Depends(get_db),
-):
-    """查看持久化的 paper_chunks，支持按论文和页码过滤。"""
-    limit = max(1, min(limit, 2000))
-    offset = max(0, offset)
-
-    filters = []
-    if paper_id:
-        filters.append(PaperChunk.paper_id == paper_id)
-    if page is not None:
-        filters.append(PaperChunk.page_number == page)
-
-    count_stmt = select(func.count()).select_from(PaperChunk)
-    if filters:
-        count_stmt = count_stmt.where(*filters)
-    total = (await db.execute(count_stmt)).scalar() or 0
-
-    stmt = (
-        select(PaperChunk, Paper.title)
-        .join(Paper, Paper.id == PaperChunk.paper_id)
-        .order_by(PaperChunk.paper_id.asc(), PaperChunk.page_number.asc(), PaperChunk.chunk_id.asc())
-        .offset(offset)
-        .limit(limit)
-    )
-    if filters:
-        stmt = stmt.where(*filters)
-
-    rows = (await db.execute(stmt)).all()
-    chunks = []
-    for chunk, paper_title in rows:
-        metadata = _safe_json_loads(chunk.metadata_json, {})
-        chunks.append(
-            {
-                "id": chunk.id,
-                "paper_id": chunk.paper_id,
-                "paper_title": paper_title or "",
-                "chunk_id": chunk.chunk_id,
-                "page": chunk.page_number,
-                "block_id": chunk.block_id,
-                "text": chunk.text,
-                "metadata": metadata,
-                "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
-            }
-        )
-
-    return {
-        "paper_id": paper_id,
-        "page": page,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "chunks": chunks,
-    }
-
-
 @router.get("/{paper_id}")
 async def get_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
     """获取论文详情"""
@@ -1170,7 +1117,6 @@ async def refresh_reader_profile(
     paper.ai_summary_md = summary_md
 
     await db.commit()
-    await paper_ingestion_service.rebuild_vector_index(paper, db)
     await db.refresh(paper)
 
     paper_data = _paper_to_dict(paper)
@@ -1192,9 +1138,7 @@ async def delete_paper(paper_id: str, db: AsyncSession = Depends(get_db)):
 
     # 删除数据库记录
     try:
-        vector_index_service.delete_paper(paper_id)
         await db.execute(delete(PaperBlock).where(PaperBlock.paper_id == paper_id))
-        await db.execute(delete(PaperChunk).where(PaperChunk.paper_id == paper_id))
         result = await db.execute(select(Paper).where(Paper.id == paper_id))
         paper = result.scalar_one_or_none()
         if paper:

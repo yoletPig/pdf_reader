@@ -1,5 +1,5 @@
 """API 路由层"""
-from app.api import papers, search, translation, config, prompts, agent_runs
+from app.api import papers, search, translation, config, prompts, agent_proxy
 
 __all__ = [
     "papers",
@@ -7,5 +7,5 @@ __all__ = [
     "translation",
     "config",
     "prompts",
-    "agent_runs",
+    "agent_proxy",
 ]

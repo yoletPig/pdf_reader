@@ -944,7 +944,6 @@ export default function ReaderPage() {
         input: {
           question,
           paper_id: id,
-          top_k: 8,
         },
         context: {
           paper_id: id,

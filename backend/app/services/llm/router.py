@@ -36,6 +36,18 @@ class LLMRouter:
             "已配置" if self._config.api_key else "❌ 未配置",
         )
 
+    async def apply_config(self, config: LLMConfig):
+        """应用运行时配置（来自系统设置页），并热替换适配器。"""
+        await self.close_all()
+        self._config = config
+        self._adapter = OpenAIAdapter(config)
+        logger.info(
+            "应用运行时模型配置: model=%s base_url=%s api_key=%s",
+            config.model,
+            config.base_url,
+            "已配置" if config.api_key else "❌ 未配置",
+        )
+
     def _get_adapter(self) -> OpenAIAdapter:
         if self._adapter is None:
             logger.error("LLM 适配器未初始化，请检查 .env 配置。")

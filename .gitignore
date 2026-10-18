@@ -11,3 +11,4 @@ dist
 pdf_reader.db
 .env
 =1.23.0
+logs/

@@ -12,8 +12,19 @@ from docling_core.transforms.chunker import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from transformers import AutoTokenizer
 
-from app.services.ingestion.chunker import TextChunk
 from app.services.pdf.types import BlockType, PDFBlock, PDFDocument, PDFPage
+
+
+@dataclass
+class TextChunk:
+    """docling 引擎内部使用的文本块（向量索引已移除，仅保留结构用于抽取）。"""
+
+    chunk_id: str
+    text: str
+    page_number: int = 1
+    paper_id: str = ""
+    block_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _normalize_text(value: str | None) -> str:

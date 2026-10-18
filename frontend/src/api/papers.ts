@@ -88,8 +88,6 @@ export interface PaperListParams {
 
 export const papersApi = {
   list: (params?: PaperListParams) => apiClient.get<PaperListResponse>('/papers', { params }),
-  listChunks: (params?: { paper_id?: string; page?: number; limit?: number; offset?: number }) =>
-    apiClient.get<PaperChunksResponse>('/papers/chunks', { params }),
   get: (id: string) => apiClient.get<Paper>(`/papers/${id}`),
   updateReaderProfile: (id: string, data: Record<string, any>) =>
     apiClient.patch<Paper>(`/papers/${id}/reader-profile`, data),

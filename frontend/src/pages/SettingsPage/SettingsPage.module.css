@@ -179,3 +179,78 @@
   background: var(--color-surface);
   color: var(--color-text);
 }
+
+/* ---- 新增：可编辑设置项样式 ---- */
+.groupDescription {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin-bottom: 12px;
+}
+
+.fieldLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.fieldLabel span { color: inherit; }
+
+.overriddenBadge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.fieldHint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fieldRow input,
+.fieldRow select {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.fieldRow select {
+  cursor: pointer;
+}
+
+.fieldError {
+  font-size: 12px;
+  color: #e53e3e;
+}
+
+.statusBar {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-size: 13px;
+}
+
+.modelActions h3 {
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+
+.gatewayStatus {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}

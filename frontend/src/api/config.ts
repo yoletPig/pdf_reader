@@ -10,7 +10,37 @@ export interface AppModelConfig {
   trust_env: boolean
 }
 
+/** 设置项定义（后端返回） */
+export interface SettingField {
+  key: string
+  label: string
+  type: 'string' | 'secret' | 'number' | 'enum'
+  value: string | number | null
+  default?: string | number | null
+  overridden: boolean
+  has_value?: boolean
+  choices?: Array<{ value: string; label: string }>
+  description?: string
+}
+
+export interface SettingGroup {
+  title: string
+  description: string
+  fields: SettingField[]
+}
+
+export interface SystemSettingsResponse {
+  groups: Record<string, SettingGroup>
+}
+
 export const configApi = {
   getModel: () => apiClient.get<AppModelConfig>('/config/model'),
   testModel: () => apiClient.post('/config/test'),
+  /** 读取全部系统设置（secret 已脱敏） */
+  getSettings: () => apiClient.get<SystemSettingsResponse>('/config/settings'),
+  /** 保存单个设置项；value 为空字符串/null 表示重置回默认 */
+  saveSetting: (key: string, value: string | number | null) =>
+    apiClient.put('/config/settings', { key, value }),
+  /** PDF 引擎列表与当前值 */
+  getEngines: () => apiClient.get<{ engines: Array<{ value: string; label: string; description: string }>; current: string }>('/config/engines'),
 }

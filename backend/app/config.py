@@ -22,18 +22,11 @@ class Settings(BaseSettings):
     PAPERS_DIR: Path = DATA_DIR / "papers"
     CACHE_DIR: Path = DATA_DIR / "cache"
 
-    # 向量数据库
-    VECTOR_DB_TYPE: str = "chromadb"  # chromadb / milvus_lite
-    VECTOR_DB_PATH: str = "./data/vectors"
+    # PDF 解析引擎：pymupdf（快速文本提取）/ docling（深度结构解析）
+    # 运行时可在系统设置页覆盖（存于 app_settings 表）
+    PDF_ENGINE: str = "pymupdf"
 
-    # Embedding
-    EMBEDDING_PROVIDER: str = "local_api"  # local_api / local_hash
-    EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    EMBEDDING_DEVICE: str = "cpu"
-    EMBEDDING_API_KEY: Optional[str] = None
-    EMBEDDING_API_URL: Optional[str] = "http://127.0.0.1:8001/v1/embeddings"
-
-    # 单模型 LLM 配置
+    # 单模型 LLM 配置（agent / 翻译 / 总结共用，运行时可在设置页覆盖）
     LLM_MODEL: str = "gpt-4o-mini"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
@@ -41,15 +34,12 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 4096
     LLM_TEMPERATURE: float = 0.3
 
+    # agent-gateway (Node/pi agent) 服务地址
+    AGENT_GATEWAY_URL: str = "http://127.0.0.1:8002"
+
     # 翻译缓存
     TRANSLATION_CACHE_SIZE: int = 10000
     TRANSLATION_CACHE_TTL: int = 86400 * 30  # 30 days
-
-    # RAG 配置
-    RAG_DEFAULT_TOP_K: int = 10
-    RAG_CHUNK_SIZE: int = 512
-    RAG_CHUNK_OVERLAP: int = 64
-    RAG_MAX_CONTEXT_TOKENS: int = 8000
 
     # 论文检索
     SEARCH_TIMEOUT: int = 30

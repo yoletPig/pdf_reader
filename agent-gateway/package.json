@@ -1,0 +1,21 @@
+{
+  "name": "pdf-reader-agent-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi agent 网关：为 pdf_reader 提供论文问答 agent 运行时",
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.86.1",
+    "@earendil-works/pi-ai": "^0.86.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

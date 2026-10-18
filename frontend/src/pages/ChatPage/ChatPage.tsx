@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../../stores/chat-store'
-import { AgentRunEvent, RetrievalDebugResult, agentRunsApi } from '../../api/agent-runs'
+import { ExecutionMetadata, ThoughtStep, streamPaperQA, agentRunsApi } from '../../api/agent-runs'
 import { papersApi, Paper } from '../../api/papers'
 import styles from './ChatPage.module.css'
 
@@ -12,31 +12,20 @@ function getQaSessionKey(scope: string) {
   return `pdf-reader:${scope}:qa-session`
 }
 
-function formatEventSummary(event: AgentRunEvent) {
-  const payload = event.payload || {}
-  switch (event.type) {
-    case 'plan_created':
-      return `steps: ${(payload.steps || []).join(' -> ')}`
-    case 'tool_started':
-      return `${payload.tool} attempt ${payload.attempt || 1}`
-    case 'tool_finished':
-      return `${payload.tool} ${payload.duration_ms || 0}ms`
-    case 'tool_failed':
-      return `${payload.tool} ${payload.error_type || 'Error'}`
-    case 'retry_scheduled':
-      return `${payload.tool} retry ${payload.next_attempt || ''}`.trim()
-    case 'llm_started':
-      return `${payload.model || 'default'} ${payload.message_count || 0} msgs`
-    case 'llm_finished':
-      return `${payload.model || 'default'} ${payload.duration_ms || 0}ms / ${payload.usage?.total_tokens || 0} tokens`
-    case 'citation_checked':
-      return `${payload.valid || 0}/${payload.total || 0} valid`
-    case 'run_finished':
-    case 'run_failed':
-      return `${payload.duration_ms || 0}ms`
-    default:
-      return Object.entries(payload).slice(0, 2).map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
-  }
+function ThinkingTimeline({ steps }: { steps: ThoughtStep[] }) {
+  return (
+    <div className={styles.thinkingList}>
+      {steps.map((step) => (
+        <div key={step.id} className={`${styles.thinkingStep} ${styles[step.status]}`}>
+          <span className={styles.thinkingMarker} aria-hidden="true" />
+          <div>
+            <div className={styles.thinkingTitle}>{step.title}</div>
+            <p className={styles.thinkingContent}>{step.content}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export default function ChatPage() {
@@ -44,9 +33,8 @@ export default function ChatPage() {
   const [papers, setPapers] = useState<Paper[]>([])
   const [selectedPaperId, setSelectedPaperId] = useState('')
   const [qaSessionId, setQaSessionId] = useState('')
-  const [expandedRuns, setExpandedRuns] = useState<Record<string, boolean>>({})
-  const [expandedRetrievals, setExpandedRetrievals] = useState<Record<string, boolean>>({})
-  const { messages, isStreaming, addMessage, setStreaming, clearMessages } = useChatStore()
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const { messages, isStreaming, addMessage, appendToLast, updateMessage, setStreaming, clearMessages } = useChatStore()
   const scopeLabel = useMemo(() => selectedPaperId ? '单论文' : '跨论文', [selectedPaperId])
 
   useEffect(() => {
@@ -61,62 +49,146 @@ export default function ChatPage() {
     setQaSessionId(storedSessionId)
   }, [selectedPaperId])
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages])
+
   const handleSend = async () => {
     if (!input.trim() || isStreaming || !qaSessionId) return
     const userMsg = { id: Date.now().toString(), role: 'user' as const, content: input, timestamp: Date.now() }
     addMessage(userMsg)
     setInput('')
     setStreaming(true)
+    const thinkingMessageId = `${userMsg.id}:thinking`
+    const answerMessageId = `${userMsg.id}:answer`
+    let thinkingStarted = false
+    let answerStarted = false
+    let activeRunId = ''
+    let events: ThoughtStep[] = []
+    let streamedContent = ''
+    let execution: ExecutionMetadata = {
+      mode: 'retrieval',
+      trace_visibility: 'compact',
+      reason: '',
+    }
 
     try {
-      const res = await agentRunsApi.createPaperQA({
+      await streamPaperQA({
         input: {
           question: userMsg.content,
           paper_id: selectedPaperId || undefined,
-          top_k: 5,
         },
         context: {
           paper_id: selectedPaperId || undefined,
           session_id: qaSessionId,
         },
-      })
-      const data = res.data as any
-      let events: AgentRunEvent[] = []
-      let retrievalDebug
-      if (data.run_id) {
-        try {
-          const [eventsRes, retrievalRes] = await Promise.all([
-            agentRunsApi.getEvents(data.run_id),
-            agentRunsApi.getRetrieveDebug({
-              question: userMsg.content,
-              paper_id: selectedPaperId || undefined,
-              top_k: 5,
-            }),
-          ])
-          events = eventsRes.data.events || []
-          retrievalDebug = retrievalRes.data
-        } catch (eventErr) {
-          console.error(eventErr)
+      }, (item) => {
+        if (item.type === 'run_created') {
+          activeRunId = item.data.run_id
+          execution = item.data.execution
+          if (item.data.thought) {
+            thinkingStarted = true
+            events = [item.data.thought]
+            addMessage({
+              id: thinkingMessageId,
+              role: 'assistant',
+              kind: 'thinking',
+              execution,
+              runId: activeRunId,
+              content: '',
+              events,
+              timestamp: Date.now(),
+            })
+          }
+          return
         }
-      }
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        runId: data.run_id,
-        content: data.answer?.content || '抱歉，无法回答这个问题。',
-        sources: data.answer?.sources || [],
-        traceSummary: data.answer?.trace_summary,
-        events,
-        retrievalDebug,
-        timestamp: Date.now(),
+        if (item.type === 'answer_delta') {
+          const delta = item.data.content
+          streamedContent += delta
+          if (!answerStarted) {
+            answerStarted = true
+            addMessage({
+              id: answerMessageId,
+              role: 'assistant',
+              kind: 'answer',
+              execution,
+              content: '',
+              timestamp: Date.now(),
+            })
+          }
+          appendToLast(delta)
+          return
+        }
+        if (item.type === 'event') {
+          if (!thinkingStarted) return
+          events = [...events, item.data]
+          updateMessage(thinkingMessageId, { events })
+          return
+        }
+        if (item.type === 'result') {
+          execution = item.data.execution || execution
+          const answerUpdate = {
+            content: item.data.answer.content || streamedContent || '抱歉，无法回答这个问题。',
+            sources: item.data.answer.sources || [],
+            traceSummary: item.data.answer.trace_summary,
+            execution,
+          }
+          if (answerStarted) {
+            updateMessage(answerMessageId, answerUpdate)
+          } else {
+            answerStarted = true
+            addMessage({
+              id: answerMessageId,
+              role: 'assistant',
+              kind: 'answer',
+              ...answerUpdate,
+              timestamp: Date.now(),
+            })
+          }
+          return
+        }
+        if (item.type === 'error') {
+          const errorContent = `出错了：${item.data.detail || '请稍后再试。'}`
+          if (answerStarted) {
+            updateMessage(answerMessageId, { content: errorContent })
+          } else {
+            answerStarted = true
+            addMessage({
+              id: answerMessageId,
+              role: 'assistant',
+              kind: 'answer',
+              execution,
+              content: errorContent,
+              timestamp: Date.now(),
+            })
+          }
+        }
       })
     } catch (err) {
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '出错了，请稍后再试。',
-        timestamp: Date.now(),
-      })
+      console.error(err)
+      if (thinkingStarted) {
+        if (answerStarted) {
+          updateMessage(answerMessageId, { content: '出错了，请稍后再试。' })
+        } else {
+          addMessage({
+            id: answerMessageId,
+            role: 'assistant',
+            kind: 'answer',
+            execution,
+            content: '出错了，请稍后再试。',
+            timestamp: Date.now(),
+          })
+        }
+      } else {
+        addMessage({
+          id: answerMessageId,
+          role: 'assistant',
+            kind: 'answer',
+            execution,
+          content: '出错了，请稍后再试。',
+          timestamp: Date.now(),
+        })
+      }
     } finally {
       setStreaming(false)
     }
@@ -137,11 +209,13 @@ export default function ChatPage() {
             <p className={styles.hint}>支持跨论文对比、概念解释、方法论分析等</p>
           </div>
         )}
-        {messages.map(msg => (
-          <div key={msg.id} className={`${styles.message} ${styles[msg.role]}`}>
-            <div className={styles.avatar}>{msg.role === 'user' ? '👤' : '🤖'}</div>
-            <div className={styles.bubble}>
-              <p>{msg.content}</p>
+        {messages.map(msg => {
+          const messageContent = msg.content || (msg.kind === 'thinking' && isStreaming ? '正在准备执行...' : '')
+          return (
+            <div key={msg.id} className={`${styles.message} ${styles[msg.role]}`}>
+              <div className={styles.avatar}>{msg.role === 'user' ? '👤' : '🤖'}</div>
+              <div className={styles.bubble}>
+              {messageContent ? <p>{messageContent}</p> : null}
               {msg.sources && msg.sources.length > 0 && (
                 <div className={styles.sources}>
                   <p className={styles.sourcesTitle}>📚 引用来源:</p>
@@ -152,79 +226,30 @@ export default function ChatPage() {
                   ))}
                 </div>
               )}
-              {msg.traceSummary ? (
+              {msg.execution?.trace_visibility === 'compact' && msg.sources?.length ? (
+                <div className={styles.compactTrace}>已检索 {msg.sources.length} 个相关论文片段</div>
+              ) : null}
+              {msg.execution?.mode === 'agent' && msg.traceSummary ? (
                 <div className={styles.trace}>
                   <span>events {msg.traceSummary.event_count || 0}</span>
                   <span>tools {msg.traceSummary.tool_calls || 0}</span>
                   <span>llm {msg.traceSummary.llm_calls || 0}</span>
-                  <span>{msg.traceSummary.duration_ms || 0}ms</span>
                   <span>tokens {msg.traceSummary.token_usage?.total_tokens || 0}</span>
                 </div>
               ) : null}
               {msg.runId && msg.events && msg.events.length > 0 ? (
-                <div className={styles.eventsPanel}>
-                  <div className={styles.panelActions}>
-                    <button
-                      type="button"
-                      className={styles.eventsToggle}
-                      onClick={() => setExpandedRuns((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
-                    >
-                      {expandedRuns[msg.runId] ? '隐藏执行过程' : '查看执行过程'}
-                    </button>
-                    {msg.retrievalDebug?.results?.length ? (
-                      <button
-                        type="button"
-                        className={styles.eventsToggle}
-                        onClick={() => setExpandedRetrievals((state) => ({ ...state, [msg.runId!]: !state[msg.runId!] }))}
-                      >
-                        {expandedRetrievals[msg.runId] ? '隐藏检索命中' : '查看检索命中'}
-                      </button>
-                    ) : null}
+                <section className={styles.executionPanel}>
+                  <div className={styles.executionHeader}>
+                    <span>思考过程</span>
                   </div>
-                  {expandedRuns[msg.runId] ? (
-                    <div className={styles.eventsList}>
-                      {msg.events.map((event) => (
-                        <div key={`${msg.runId}-${event.sequence}`} className={styles.eventRow}>
-                          <span className={styles.eventType}>{event.type}</span>
-                          <span className={styles.eventSummary}>{formatEventSummary(event)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {expandedRetrievals[msg.runId] && msg.retrievalDebug?.results?.length ? (
-                    <div className={styles.retrievalList}>
-                      <div className={styles.retrievalHeader}>
-                        <span>{msg.retrievalDebug.candidate_count} chunks</span>
-                        <span>{msg.retrievalDebug.used_fallback ? 'fallback' : 'scored'}</span>
-                      </div>
-                      {msg.retrievalDebug.results.map((result: RetrievalDebugResult) => (
-                        <div key={`${msg.runId}-${result.chunk_id}`} className={styles.retrievalCard}>
-                          <div className={styles.retrievalMeta}>
-                            <span>{result.paper_title}</span>
-                            <span>p.{result.page}</span>
-                            <span>{result.chunk_id}</span>
-                          </div>
-                          {result.section_title ? (
-                            <div className={styles.retrievalSection}>{result.section_title}</div>
-                          ) : null}
-                          <pre className={styles.retrievalText}>{result.chunk_text}</pre>
-                          <div className={styles.retrievalScores}>
-                            <span>final {result.score_breakdown.final_score.toFixed(4)}</span>
-                            <span>vector {result.score_breakdown.vector_score.toFixed(4)}</span>
-                            <span>lexical {result.score_breakdown.lexical_score.toFixed(4)}</span>
-                            <span>bridge {result.score_breakdown.bridge_score.toFixed(4)}</span>
-                            <span>section {result.score_breakdown.section_bonus.toFixed(4)}</span>
-                            <span>clue {result.score_breakdown.clue_bonus.toFixed(4)}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
+                  <ThinkingTimeline steps={msg.events} />
+                </section>
               ) : null}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
+        <div ref={messagesEndRef} />
       </main>
 
       <footer className={styles.inputBar}>
@@ -260,6 +285,8 @@ export default function ChatPage() {
             window.sessionStorage.setItem(getQaSessionKey(scope), nextSessionId)
             setQaSessionId(nextSessionId)
             clearMessages()
+            // 清空 agent-gateway 中的会话上下文
+            agentRunsApi.resetSession(qaSessionId).catch(console.error)
           }}
           disabled={isStreaming}
           className="btn"

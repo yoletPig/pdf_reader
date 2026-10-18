@@ -1,4 +1,5 @@
 """翻译 API"""
+import asyncio
 import traceback
 import hashlib
 import logging
@@ -334,13 +335,15 @@ def _load_page_text_from_disk(paper_id: str, page_number: int) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _build_reference_pages_context(paper: Paper, paper_id: str, page_number: int) -> str:
+async def _build_reference_pages_context(paper: Paper, paper_id: str, page_number: int) -> str:
     previous_page = page_number - 1
     if previous_page <= 0:
         return ""
 
     previous_text = (
-        _extract_pdf_page_text_with_pymupdf(getattr(paper, "file_path", "") or "", previous_page)
+        await asyncio.to_thread(
+            _extract_pdf_page_text_with_pymupdf, getattr(paper, "file_path", "") or "", previous_page
+        )
         or _load_page_text_from_disk(paper_id, previous_page)
         or _load_page_markdown_from_disk(paper_id, previous_page)
     )
@@ -362,24 +365,6 @@ def _extract_pdf_page_text_with_pymupdf(file_path: str, page_number: int) -> str
             return _normalize_pdf_page_text(page.get_text("text", sort=True))
     except Exception:
         return ""
-
-
-def _build_auxiliary_text(
-    paper: Paper,
-    *,
-    page_number: int,
-    pdfjs_text: str = "",
-) -> str:
-    sections: list[str] = []
-    normalized_pdfjs = _normalize_auxiliary_text(pdfjs_text)
-    if normalized_pdfjs:
-        sections.append(f"## PDF.js Page Text\n\n{normalized_pdfjs}")
-
-    pymupdf_text = _extract_pdf_page_text_with_pymupdf(getattr(paper, "file_path", "") or "", page_number)
-    if pymupdf_text and pymupdf_text != normalized_pdfjs:
-        sections.append(f"## PyMuPDF Page Text\n\n{pymupdf_text}")
-
-    return "\n\n".join(section for section in sections if section).strip()
 
 
 def _extract_layout_reference_markdown(markdown: str, max_chars: int = 5000) -> str:
@@ -824,7 +809,7 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             )
         ).scalar_one_or_none()
         previous_summary = ""
-        reference_pages = _build_reference_pages_context(paper, paper_id, page_number)
+        reference_pages = await _build_reference_pages_context(paper, paper_id, page_number)
         repaired_markdown = _repair_formula_placeholders(
             source_markdown,
             current_page_text,

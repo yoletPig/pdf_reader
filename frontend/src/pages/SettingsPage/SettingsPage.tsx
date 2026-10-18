@@ -1,73 +1,200 @@
-import { useState, useEffect } from 'react'
-import { configApi } from '../../api/config'
+import { useEffect, useState } from 'react'
+import { configApi, SettingField, SettingGroup } from '../../api/config'
 import { promptsApi } from '../../api/prompts'
 import { useConfigStore } from '../../stores/config-store'
 import styles from './SettingsPage.module.css'
 
+type TabId = 'pdf' | 'model' | 'prompts' | 'general'
+
+interface EditableField extends SettingField {
+  dirty: boolean
+  error?: string
+}
+
 export default function SettingsPage() {
-  const { modelConfig, prompts, setModelConfig, setPrompts, theme, setTheme } = useConfigStore()
-  const [activeTab, setActiveTab] = useState<'models' | 'prompts' | 'general'>('models')
+  const { prompts, setPrompts, theme, setTheme } = useConfigStore()
+  const [activeTab, setActiveTab] = useState<TabId>('pdf')
+  const [groups, setGroups] = useState<Record<string, SettingGroup>>({})
+  const [fields, setFields] = useState<Record<string, EditableField>>({})
   const [testing, setTesting] = useState(false)
   const [status, setStatus] = useState('')
+  const [savingKey, setSavingKey] = useState('')
+  const [gatewayStatus, setGatewayStatus] = useState<string>('')
 
   useEffect(() => {
-    configApi.getModel().then(res => setModelConfig(res.data)).catch(console.error)
+    refreshSettings()
     promptsApi.list().then(res => setPrompts(res.data.templates || [])).catch(console.error)
-  }, [setModelConfig, setPrompts])
+    import('../../api/agent-runs').then(({ agentRunsApi }) =>
+      agentRunsApi.health().then(res => {
+        setGatewayStatus(res.data.status === 'ok' ? `运行中（${res.data.active_sessions ?? 0} 个会话）` : '异常')
+      }).catch(() => setGatewayStatus('未启动'))
+    ).catch(() => setGatewayStatus('未启动'))
+  }, [setPrompts])
+
+  const refreshSettings = async () => {
+    try {
+      const res = await configApi.getSettings()
+      setGroups(res.data.groups)
+      const fieldMap: Record<string, EditableField> = {}
+      for (const group of Object.values(res.data.groups)) {
+        for (const field of group.fields) {
+          fieldMap[field.key] = { ...field, dirty: false }
+        }
+      }
+      setFields(fieldMap)
+    } catch (error: any) {
+      setStatus(`读取设置失败: ${error?.response?.data?.detail || error.message}`)
+    }
+  }
+
+  const updateField = (key: string, value: string | number) => {
+    setFields(prev => ({
+      ...prev,
+      [key]: { ...prev[key], value, dirty: true, error: undefined },
+    }))
+  }
+
+  const saveField = async (field: EditableField) => {
+    if (!field.dirty) return
+    setSavingKey(field.key)
+    setStatus('')
+    try {
+      const value = field.value === '' ? null : field.value
+      await configApi.saveSetting(field.key, value)
+      setFields(prev => ({ ...prev, [field.key]: { ...prev[field.key], dirty: false } }))
+      setStatus(`已保存「${field.label}」，立即生效。`)
+      await refreshSettings()
+      if (field.key.startsWith('llm.') && field.key !== 'llm.api_key') {
+        handleTestModel()
+      }
+    } catch (error: any) {
+      setFields(prev => ({
+        ...prev,
+        [field.key]: { ...prev[field.key], error: error?.response?.data?.detail || '保存失败' },
+      }))
+    } finally {
+      setSavingKey('')
+    }
+  }
 
   const handleTestModel = async () => {
     setTesting(true)
     setStatus('')
     try {
       const res = await configApi.testModel()
-      setStatus(res.data.status === 'ok' ? `连通成功，耗时 ${res.data.latency_ms}ms` : `测试失败: ${res.data.message}`)
+      if (res.data.status === 'ok') {
+        setStatus(`✅ 模型连通成功，耗时 ${res.data.latency_ms}ms，返回: ${res.data.response?.slice(0, 60)}`)
+      } else {
+        setStatus(`❌ 测试失败: ${res.data.message}`)
+      }
     } catch (error: any) {
-      setStatus(error?.response?.data?.detail || '测试失败')
+      setStatus(`❌ 测试失败: ${error?.response?.data?.detail || error.message}`)
     } finally {
       setTesting(false)
     }
+  }
+
+  const renderField = (field: EditableField) => {
+    const commonProps = {
+      disabled: savingKey === field.key,
+    }
+    let control: React.ReactNode = null
+    if (field.type === 'enum') {
+      control = (
+        <select
+          value={String(field.value ?? '')}
+          onChange={e => updateField(field.key, e.target.value)}
+          {...commonProps}
+        >
+          {(field.choices || []).map(choice => (
+            <option key={choice.value} value={choice.value}>{choice.label}</option>
+          ))}
+        </select>
+      )
+    } else if (field.type === 'number') {
+      control = (
+        <input
+          type="number"
+          value={Number(field.value ?? 0)}
+          onChange={e => updateField(field.key, Number(e.target.value))}
+          {...commonProps}
+        />
+      )
+    } else {
+      control = (
+        <input
+          type={field.type === 'secret' ? 'password' : 'text'}
+          value={String(field.value ?? '')}
+          placeholder={field.type === 'secret' && field.has_value ? '已配置（留空保持不变）' : ''}
+          onChange={e => updateField(field.key, e.target.value)}
+          {...commonProps}
+        />
+      )
+    }
+
+    return (
+      <div key={field.key} className={styles.field}>
+        <label className={styles.fieldLabel}>
+          <span>{field.label}</span>
+          {field.overridden ? <span className={styles.overriddenBadge}>已自定义</span> : null}
+        </label>
+        {field.description ? <p className={styles.fieldHint}>{field.description}</p> : null}
+        <div className={styles.fieldRow}>
+          {control}
+          <button
+            className="btn btn-secondary"
+            onClick={() => saveField(field)}
+            disabled={!field.dirty || savingKey === field.key}
+          >
+            {savingKey === field.key ? '保存中...' : '保存'}
+          </button>
+        </div>
+        {field.error ? <p className={styles.fieldError}>{field.error}</p> : null}
+      </div>
+    )
   }
 
   return (
     <div className={styles.container}>
       <header className={styles.header}>
         <a href="/" className={styles.back}>← 返回</a>
-        <h1>⚙️ 设置</h1>
+        <h1>⚙️ 系统设置</h1>
       </header>
 
       <div className={styles.layout}>
         <nav className={styles.tabs}>
-          <button className={`${styles.tab} ${activeTab === 'models' ? styles.active : ''}`} onClick={() => setActiveTab('models')}>🤖 模型配置</button>
+          <button className={`${styles.tab} ${activeTab === 'pdf' ? styles.active : ''}`} onClick={() => setActiveTab('pdf')}>📄 PDF 识别</button>
+          <button className={`${styles.tab} ${activeTab === 'model' ? styles.active : ''}`} onClick={() => setActiveTab('model')}>🤖 模型配置</button>
           <button className={`${styles.tab} ${activeTab === 'prompts' ? styles.active : ''}`} onClick={() => setActiveTab('prompts')}>📝 Prompt 模板</button>
           <button className={`${styles.tab} ${activeTab === 'general' ? styles.active : ''}`} onClick={() => setActiveTab('general')}>🎨 通用设置</button>
         </nav>
 
         <main className={styles.content}>
-          {activeTab === 'models' && (
+          {status ? <div className={styles.statusBar}>{status}</div> : null}
+
+          {(activeTab === 'pdf' || activeTab === 'model') && groups[activeTab] && (
             <section>
-              <h2>当前模型配置</h2>
+              <h2>{groups[activeTab].title}</h2>
+              <p className={styles.groupDescription}>{groups[activeTab].description}</p>
               <div className={styles.formCard}>
-                <label className={styles.field}>
-                  <span>Base URL</span>
-                  <input value={modelConfig?.base_url || ''} readOnly />
-                </label>
-                <label className={styles.field}>
-                  <span>模型名</span>
-                  <input value={modelConfig?.model || ''} readOnly />
-                </label>
-                <label className={styles.field}>
-                  <span>API Key</span>
-                  <input value={modelConfig?.api_key || ''} readOnly type="password" />
-                </label>
-                <p className={styles.statusText}>
-                  该项目现在只通过 <code>backend/.env</code> 配置模型。修改后请重启后端服务。
-                </p>
-                <div className={styles.formActions}>
-                  <button className="btn btn-secondary" onClick={handleTestModel} disabled={testing}>
-                    {testing ? '测试中...' : '测试连通性'}
+                {groups[activeTab].fields.map(f => renderField(fields[f.key] || f))}
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'model' && (
+            <section className={styles.modelActions}>
+              <div className={styles.formCard}>
+                <h3>连通性测试</h3>
+                <p className={styles.fieldHint}>使用当前生效配置发起一次最小请求。</p>
+                <div className={styles.fieldRow}>
+                  <button className="btn btn-primary" onClick={handleTestModel} disabled={testing}>
+                    {testing ? '测试中...' : '🧪 测试模型连通性'}
                   </button>
+                  <span className={styles.gatewayStatus}>
+                    agent 服务: {gatewayStatus || '检测中...'}
+                  </span>
                 </div>
-                {status ? <p className={styles.statusText}>{status}</p> : null}
               </div>
             </section>
           )}
