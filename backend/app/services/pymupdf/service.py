@@ -67,23 +67,23 @@ class PymupdfService:
             for page_index in range(page_count):
                 page = doc.load_page(page_index)
                 page_number = page_index + 1
-                raw_text = page.get_text("text", sort=True) or ""
-                normalized = _normalize_text(raw_text)
-                markdown = self._render_page_markdown(page, raw_text)
-
                 blocks = self._extract_page_blocks(page, page_number)
+                # 页面文本由过滤后的块重建，剔除图片内 OCR/矢量图文字
+                normalized = "\n\n".join(b.text for b in blocks if b.text.strip())
+                markdown = self._render_page_markdown(blocks)
+
                 pages.append(
                     PDFPage(
                         page_number=page_number,
                         width=float(page.rect.width),
                         height=float(page.rect.height),
                         blocks=blocks,
-                        text=raw_text,
+                        text=normalized,
                         metadata={"markdown": markdown},
                     )
                 )
                 page_sources.append(
-                    PageSource(page_number=page_number, text=raw_text, markdown=markdown)
+                    PageSource(page_number=page_number, text=normalized, markdown=markdown)
                 )
 
             title = self._guess_title(metadata, pages, Path(source_ref).name)
@@ -115,9 +115,20 @@ class PymupdfService:
     def _extract_page_blocks(self, page, page_number: int) -> list[PDFBlock]:
         blocks: list[PDFBlock] = []
         text_blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_BLOCKS)["blocks"]
+
+        # 图片区域（用于过滤图内文字）
+        image_regions = [
+            tuple(float(v) for v in block.get("bbox", (0.0, 0.0, 0.0, 0.0)))
+            for block in text_blocks
+            if block.get("type") == 1
+        ]
+
         for block in text_blocks:
             if block.get("type") != 0:
                 continue
+            bbox = tuple(float(v) for v in block.get("bbox", (0.0, 0.0, 0.0, 0.0)))
+            if self._inside_image(bbox, image_regions):
+                continue  # 图内文字（图注之外）不提取
             text = _normalize_text("".join(
                 span.get("text", "")
                 for line in block.get("lines", [])
@@ -131,8 +142,7 @@ class PymupdfService:
                 for span in line.get("spans", [])
             ]
             avg_size = (sum(sizes) / len(sizes)) if sizes else 0.0
-            bbox = block.get("bbox", (0.0, 0.0, 0.0, 0.0))
-            block_type = BlockType.TEXT
+            block_type = BlockType.PARAGRAPH
             if self._HEADING_RE.match(text):
                 block_type = BlockType.HEADING
             elif avg_size >= 13.5:
@@ -142,16 +152,35 @@ class PymupdfService:
                     id=f"p{page_number}-b{len(blocks) + 1}",
                     text=text,
                     page=page_number,
-                    bbox=tuple(float(v) for v in bbox),
+                    bbox=bbox,
                     block_type=block_type,
                     section_title="",
                 )
             )
         return blocks
 
-    def _render_page_markdown(self, page, raw_text: str) -> str:
+    @staticmethod
+    def _inside_image(
+        item_bbox: tuple[float, float, float, float],
+        image_regions: list[tuple[float, float, float, float]],
+        threshold: float = 0.7,
+    ) -> bool:
+        """文本块面积 ≥ threshold 落在图片区域内 → 图内文字，过滤。"""
+        x0, y0, x1, y1 = item_bbox
+        item_area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        if item_area <= 0:
+            return False
+        for px0, py0, px1, py1 in image_regions:
+            ix0, iy0 = max(x0, px0), max(y0, py0)
+            ix1, iy1 = min(x1, px1), min(y1, py1)
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            if inter / item_area >= threshold:
+                return True
+        return False
+
+    def _render_page_markdown(self, blocks: list[PDFBlock]) -> str:
         lines: list[str] = []
-        for block in self._extract_page_blocks(page, page.number + 1 if hasattr(page, "number") else 1):
+        for block in blocks:
             if block.block_type == BlockType.HEADING:
                 lines.append(f"## {block.text}")
             else:

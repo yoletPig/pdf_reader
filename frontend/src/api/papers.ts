@@ -13,6 +13,7 @@ export interface Paper {
   file_path: string
   markdown_path?: string
   tags: string
+  folder_id: string
   added_at: string
   last_read_at: string | null
   read_progress: number
@@ -83,6 +84,7 @@ export interface PaperListParams {
   source?: string
   indexed?: boolean
   year?: number
+  folder_id?: string
   sort?: 'recent' | 'title' | 'year' | 'progress'
 }
 
@@ -91,13 +93,14 @@ export const papersApi = {
   get: (id: string) => apiClient.get<Paper>(`/papers/${id}`),
   updateReaderProfile: (id: string, data: Record<string, any>) =>
     apiClient.patch<Paper>(`/papers/${id}/reader-profile`, data),
-  refreshReaderProfile: (id: string, data: { mode: 'quick' | 'polish'; profile?: Record<string, any> }) =>
+  refreshReaderProfile: (id: string, data: { mode?: string; profile?: Record<string, any> }) =>
     apiClient.post<Paper>(`/papers/${id}/reader-profile/refresh`, data),
   upload: (formData: FormData) =>
     apiClient.post<UploadResponse>('/papers/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
-  reindex: (id: string) => apiClient.post<ReindexPaperResponse>(`/papers/${id}/reindex`),
+  reindex: (id: string, data?: { engine?: 'pymupdf' | 'docling'; save_as_default?: boolean }) =>
+    apiClient.post<ReindexPaperResponse>(`/papers/${id}/reindex`, data ?? {}),
   delete: (id: string) => apiClient.delete(`/papers/${id}`),
   getFileUrl: (id: string) => `/api/papers/${id}/file`,
   getBlocks: (id: string, page?: number) =>

@@ -1,0 +1,131 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: 30px 0;
+}
+
+.empty {
+  text-align: center;
+  padding: 26px 8px 12px;
+  color: var(--color-text-tertiary);
+  font-size: 12.5px;
+}
+
+.emptyIcon {
+  font-size: 26px;
+  margin-bottom: 8px;
+  opacity: 0.8;
+}
+
+.emptyHints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.emptyHints button {
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  transition: all var(--transition-fast);
+}
+.emptyHints button:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+}
+
+.msg.user {
+  align-items: flex-end;
+}
+
+.userBubble {
+  max-width: 92%;
+  padding: 9px 13px;
+  background: var(--color-primary);
+  color: #fff;
+  border-radius: var(--radius-md) var(--radius-md) var(--radius-xs) var(--radius-md);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistantBubble {
+  max-width: 96%;
+  padding: 10px 13px;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md) var(--radius-md) var(--radius-md) var(--radius-xs);
+  font-size: 12.5px;
+}
+
+.typing {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  animation: pulse-soft 1.3s ease infinite;
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.sourceChip {
+  padding: 2px 9px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.input {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  background: var(--color-surface);
+  outline: none;
+  max-height: 110px;
+}
+.input:focus {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}

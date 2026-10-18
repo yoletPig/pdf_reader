@@ -21,6 +21,17 @@ import {
 
 const PORT = Number(process.env.AGENT_GATEWAY_PORT || 8002);
 
+// ---------- 日志（写入 stdout，由 start.sh 重定向到 logs/gateway.log） ----------
+
+function log(level: "INFO" | "WARN" | "ERROR", tag: string, message: string, extra?: Record<string, unknown>) {
+  const ts = new Date().toISOString();
+  const tail = extra ? ` ${JSON.stringify(extra)}` : "";
+  const line = `${ts} [${level}] [${tag}] ${message}${tail}`;
+  if (level === "ERROR") console.error(line);
+  else if (level === "WARN") console.warn(line);
+  else console.log(line);
+}
+
 // ---------- 工具函数 ----------
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -49,11 +60,20 @@ interface StreamRequest {
   session_id?: string;
   selected_text?: string;
   current_page?: number;
+  /** 历史对话（仅在会话冷启动时注入，帮助模型恢复上下文） */
+  history?: Array<{ role: string; content: string }>;
 }
 
-/** 构建用户问题（附上下文） */
-function buildUserPrompt(data: StreamRequest): string {
+/** 构建用户问题（附上下文；冷启动时注入历史对话） */
+function buildUserPrompt(data: StreamRequest, includeHistory = false): string {
   const parts: string[] = [];
+  if (includeHistory && data.history && data.history.length > 0) {
+    const lines = data.history
+      .slice(-12)
+      .map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content.slice(0, 800)}`)
+      .join("\n");
+    parts.push(`（以下是本会话之前的对话记录，仅供背景参考，不需要重复回答）\n${lines}`);
+  }
   if (data.paper_id) {
     parts.push(`（当前论文 ID: ${data.paper_id}）`);
   }
@@ -119,10 +139,20 @@ async function runAgentAndStream(
   const sessionId = data.session_id || `session-${Date.now().toString(36)}`;
   const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const sessionEntry = getOrCreateSession(sessionId, models, model, {
+  const { entry: sessionEntry, isNew } = getOrCreateSession(sessionId, models, model, {
     paperId: data.paper_id,
   });
   const agent: Agent = sessionEntry.agent;
+
+  log("INFO", "run", `流式问答开始`, {
+    run_id: runId,
+    session_id: sessionId,
+    session_new: isNew,
+    paper_id: data.paper_id || "(all)",
+    question: (data.question || "").slice(0, 120),
+    model: config.model,
+    base_url: config.base_url,
+  });
 
   write(sseFrame("run_created", {
     run_id: runId,
@@ -138,6 +168,9 @@ async function runAgentAndStream(
 
   const toolTraces: ToolTrace[] = [];
   let answerText = "";
+  let finalText = ""; // 最终 assistant 消息中的文本（作为 answerText 的兜底）
+  let stopReason = "";
+  let providerError = "";
   let tokenUsage = { input: 0, output: 0, total_tokens: 0 };
   let toolCalls = 0;
   let llmCalls = 0;
@@ -167,6 +200,7 @@ async function runAgentAndStream(
           break;
         }
         case "tool_execution_start": {
+          log("INFO", "tool", `工具调用`, { run_id: runId, tool: event.toolName, args: String(JSON.stringify(event.args || {})).slice(0, 200) });
           const trace: ToolTrace = {
             id: `tool-${toolTraces.length + 1}`,
             kind: "tool",
@@ -184,6 +218,12 @@ async function runAgentAndStream(
             last.status = event.isError ? "failed" : "completed";
             write(sseFrame("event", last));
           }
+          log(event.isError ? "WARN" : "INFO", "tool", `工具结束`, {
+            run_id: runId,
+            tool: event.toolName,
+            status: event.isError ? "failed" : "ok",
+            result_preview: String(JSON.stringify(event.result ?? event.error ?? "")).slice(0, 200),
+          });
           break;
         }
         case "message_end": {
@@ -202,6 +242,22 @@ async function runAgentAndStream(
               (b: any) => b.type === "toolCall",
             ).length;
             toolCalls += toolCallsInMessage;
+            // 记录最终消息文本与错误（answerText 可能因 interleave/仅 thinking 而为空）
+            const texts = (event.message.content || [])
+              .filter((b: any) => b.type === "text")
+              .map((b: any) => b.text || "")
+              .join("");
+            if (texts) finalText = texts;
+            stopReason = event.message.stopReason || stopReason;
+            providerError = event.message.errorMessage || providerError;
+            log("INFO", "llm", `LLM 响应`, {
+              run_id: runId,
+              stop_reason: stopReason,
+              error: providerError || undefined,
+              text_len: texts.length,
+              tool_calls: toolCallsInMessage,
+              usage,
+            });
           }
           break;
         }
@@ -212,18 +268,39 @@ async function runAgentAndStream(
   });
 
   try {
-    await agent.prompt(buildUserPrompt(data));
+    await agent.prompt(buildUserPrompt(data, isNew));
+    // 兜底：answerText 为空时取最终消息文本；模型报错时给出可诊断的提示
+    let content = answerText.trim() || finalText.trim();
+    if (!content && providerError) {
+      content = `⚠️ 模型调用失败（${stopReason || "error"}）: ${providerError.slice(0, 300)}`;
+    } else if (!content && stopReason === "aborted") {
+      content = "⚠️ 生成已被中止。";
+    } else if (!content) {
+      content = "（模型未返回文本内容）";
+    }
+    log("INFO", "run", `流式问答结束`, {
+      run_id: runId,
+      stop_reason: stopReason || "(none)",
+      error: providerError || undefined,
+      answer_len: content.length,
+      tool_calls: toolCalls,
+      llm_calls: llmCalls,
+      usage: tokenUsage,
+    });
     write(sseFrame("result", {
       run_id: runId,
       agent: "paper_qa",
       status: "completed",
       answer: {
-        content: answerText || "（无回答内容）",
+        content,
         sources: [],
         trace_summary: {
           event_count: toolTraces.length + llmCalls,
           tool_calls: toolCalls,
           llm_calls: llmCalls,
+          tools_used: toolTraces.map((t) => t.title.replace("调用 ", "")),
+          stop_reason: stopReason,
+          error_message: providerError || undefined,
           token_usage: tokenUsage,
         },
       },
@@ -236,6 +313,7 @@ async function runAgentAndStream(
   } catch (err: any) {
     failed = true;
     errorMessage = String(err?.message || err);
+    log("ERROR", "run", `流式问答异常`, { run_id: runId, error: errorMessage });
     write(sseFrame("error", {
       run_id: runId,
       detail: errorMessage,
@@ -255,11 +333,23 @@ async function runAgentSync(data: StreamRequest) {
   const sessionId = data.session_id || `session-${Date.now().toString(36)}`;
   const runId = `run-${Date.now().toString(36)}`;
 
-  const sessionEntry = getOrCreateSession(sessionId, models, model, {
+  const { entry: sessionEntry, isNew } = getOrCreateSession(sessionId, models, model, {
     paperId: data.paper_id,
   });
 
+  log("INFO", "run", `同步问答开始`, {
+    run_id: runId,
+    session_id: sessionId,
+    session_new: isNew,
+    paper_id: data.paper_id || "(all)",
+    question: (data.question || "").slice(0, 120),
+    model: config.model,
+  });
+
   let answerText = "";
+  let finalText = "";
+  let stopReason = "";
+  let providerError = "";
   let toolCalls = 0;
   let llmCalls = 0;
   let toolNames: string[] = [];
@@ -272,25 +362,58 @@ async function runAgentSync(data: StreamRequest) {
     if (event.type === "tool_execution_start") {
       toolCalls += 1;
       toolNames.push(event.toolName);
+      log("INFO", "tool", `工具调用`, { run_id: runId, tool: event.toolName, args: String(JSON.stringify(event.args || {})).slice(0, 200) });
     }
     if (event.type === "message_end" && event.message?.role === "assistant") {
       llmCalls += 1;
+      const texts = (event.message.content || [])
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text || "")
+        .join("");
+      if (texts) finalText = texts;
+      stopReason = event.message.stopReason || stopReason;
+      providerError = event.message.errorMessage || providerError;
+      log("INFO", "llm", `LLM 响应`, {
+        run_id: runId,
+        stop_reason: stopReason,
+        error: providerError || undefined,
+        text_len: texts.length,
+      });
     }
   });
 
   try {
-    await sessionEntry.agent.prompt(buildUserPrompt(data));
+    await sessionEntry.agent.prompt(buildUserPrompt(data, isNew));
+    // 兜底：answerText 为空时取最终消息文本；模型报错时给出可诊断的提示
+    let content = answerText.trim() || finalText.trim();
+    if (!content && providerError) {
+      content = `⚠️ 模型调用失败（${stopReason || "error"}）: ${providerError.slice(0, 300)}`;
+    } else if (!content && stopReason === "aborted") {
+      content = "⚠️ 生成已被中止。";
+    } else if (!content) {
+      content = "（模型未返回文本内容）";
+    }
+    log("INFO", "run", `同步问答结束`, {
+      run_id: runId,
+      stop_reason: stopReason || "(none)",
+      error: providerError || undefined,
+      answer_len: content.length,
+      tool_calls: toolCalls,
+      llm_calls: llmCalls,
+    });
     return {
       run_id: runId,
       agent: "paper_qa",
       status: "completed",
       answer: {
-        content: answerText,
+        content,
         sources: [],
         trace_summary: {
           tool_calls: toolCalls,
           tools_used: toolNames,
           llm_calls: llmCalls,
+          stop_reason: stopReason,
+          error_message: providerError || undefined,
         },
       },
       execution: {
@@ -374,10 +497,12 @@ const server = http.createServer(async (req, res) => {
           session_id: context.session_id,
           selected_text: context.selected_text,
           current_page: context.current_page,
+          history: Array.isArray(body.history) ? body.history : undefined,
         },
         (chunk) => res.write(chunk),
       );
     } catch (err: any) {
+      log("ERROR", "http", "stream 请求失败", { error: String(err?.message || err) });
       res.write(sseFrame("error", {
         run_id: "",
         detail: String(err?.message || err),
@@ -402,9 +527,11 @@ const server = http.createServer(async (req, res) => {
         session_id: context.session_id,
         selected_text: context.selected_text,
         current_page: context.current_page,
+        history: Array.isArray(body.history) ? body.history : undefined,
       });
       sendJson(res, 200, result);
     } catch (err: any) {
+      log("ERROR", "http", "同步请求失败", { error: String(err?.message || err) });
       sendJson(res, 500, { detail: String(err?.message || err) });
     }
     return;

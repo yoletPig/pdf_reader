@@ -100,18 +100,21 @@ stop_backend() {
   echo ""
   echo "━━━ Backend (FastAPI :$BACKEND_PORT) ━━━"
   stop_by_pidfile "backend" "$PID_DIR/backend.pid"
+  kill_port "$BACKEND_PORT" "backend"
 }
 
 stop_gateway() {
   echo ""
   echo "━━━ Agent Gateway (pi agent :$GATEWAY_PORT) ━━━"
   stop_by_pidfile "agent-gateway" "$PID_DIR/gateway.pid"
+  kill_port "$GATEWAY_PORT" "agent-gateway"
 }
 
 stop_frontend() {
   echo ""
   echo "━━━ Frontend (Vite :$FRONTEND_PORT) ━━━"
   stop_by_pidfile "frontend" "$PID_DIR/frontend.pid"
+  kill_port "$FRONTEND_PORT" "frontend"
 }
 
 # ---------- 主流程 ----------

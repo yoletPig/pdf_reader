@@ -1,56 +1,49 @@
 import { create } from 'zustand'
 
-import { ThoughtStep } from '../api/agent-runs'
+export interface ChatSource {
+  paper_id?: string
+  paper_title?: string
+  page?: number
+  chunk_text?: string
+}
 
-interface Message {
+export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
-  kind?: 'thinking' | 'answer'
-  execution?: {
-    mode: 'direct' | 'retrieval' | 'agent'
-    trace_visibility: 'hidden' | 'compact' | 'expanded'
-    reason: string
-  }
   content: string
-  runId?: string
-  sources?: Array<{
-    paper_id?: string
-    paper_title: string
-    page: number
-    chunk_text?: string
-    relevance_score?: number
-  }>
-  traceSummary?: {
-    event_count?: number
+  sources?: ChatSource[]
+  meta?: {
     tool_calls?: number
-    llm_calls?: number
     tools_used?: string[]
-    tool_failures?: number
-    duration_ms?: number
-    token_usage?: {
-      input?: number
-      output?: number
-      total_tokens?: number
-    }
+    llm_calls?: number
+    token_usage?: { input?: number; output?: number; total_tokens?: number }
+    error?: boolean
+    [key: string]: any
   }
-  events?: ThoughtStep[]
-  timestamp: number
+  streaming?: boolean
+  createdAt: number
 }
 
 interface ChatState {
-  messages: Message[]
+  messages: ChatMessage[]
   isStreaming: boolean
-  addMessage: (msg: Message) => void
+  activeSessionId: string | null
+  setActiveSession: (id: string | null) => void
+  setMessages: (messages: ChatMessage[]) => void
+  addMessage: (message: ChatMessage) => void
   appendToLast: (content: string) => void
-  updateMessage: (id: string, update: Partial<Message>) => void
+  updateMessage: (id: string, update: Partial<ChatMessage>) => void
   setStreaming: (streaming: boolean) => void
-  clearMessages: () => void
+  clear: () => void
 }
 
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   isStreaming: false,
-  addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
+  activeSessionId: null,
+  setActiveSession: (id) => set({ activeSessionId: id }),
+  setMessages: (messages) => set({ messages }),
+  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   appendToLast: (content) =>
     set((state) => {
       const msgs = [...state.messages]
@@ -62,11 +55,12 @@ export const useChatStore = create<ChatState>((set) => ({
       }
       return { messages: msgs }
     }),
-  updateMessage: (id, update) => set((state) => ({
-    messages: state.messages.map((message) => (
-      message.id === id ? { ...message, ...update } : message
-    )),
-  })),
+  updateMessage: (id, update) =>
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === id ? { ...message, ...update } : message,
+      ),
+    })),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
-  clearMessages: () => set({ messages: [] }),
+  clear: () => set({ messages: [], activeSessionId: null }),
 }))

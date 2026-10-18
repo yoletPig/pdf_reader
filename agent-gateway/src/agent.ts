@@ -83,8 +83,10 @@ export function getOrCreateSession(
   models: Models,
   model: Model<any>,
   options: { paperId?: string } = {},
-): SessionAgent {
-  return getSession(sessionId) ?? createSession(sessionId, models, model, options);
+): { entry: SessionAgent; isNew: boolean } {
+  const existing = getSession(sessionId);
+  if (existing) return { entry: existing, isNew: false };
+  return { entry: createSession(sessionId, models, model, options), isNew: true };
 }
 
 export function resetSession(sessionId: string): boolean {

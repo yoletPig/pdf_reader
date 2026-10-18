@@ -27,9 +27,9 @@ class PaperIngestionService:
     def _resolve_engine(self) -> str:
         return settings_store.current_pdf_engine()
 
-    def _extract_sync(self, source_ref: str, paper_id: str, paper_dir):
-        """同步解析（在线程池中执行）。"""
-        engine = self._resolve_engine()
+    def _extract_sync(self, source_ref: str, paper_id: str, paper_dir, engine: str | None = None):
+        """同步解析（在线程池中执行）；engine 可临时覆盖全局设置。"""
+        engine = engine or self._resolve_engine()
         if engine == "docling":
             from app.services.docling import docling_service
             return docling_service.extract(
@@ -44,7 +44,7 @@ class PaperIngestionService:
             artifact_dir=paper_dir / "artifacts",
         )
 
-    async def ingest(self, paper: Paper, db: AsyncSession) -> dict:
+    async def ingest(self, paper: Paper, db: AsyncSession, engine: str | None = None) -> dict:
         source_ref = (paper.file_path or "").strip() or (getattr(paper, "source_url", "") or "").strip()
         if not source_ref:
             raise ValueError("paper 缺少可提取的 source_ref")
@@ -52,7 +52,7 @@ class PaperIngestionService:
         paper_dir = settings.PAPERS_DIR / paper.id
         # 重 CPU/IO 解析放入线程池，避免阻塞事件循环
         extraction = await asyncio.to_thread(
-            self._extract_sync, source_ref, paper.id, paper_dir
+            self._extract_sync, source_ref, paper.id, paper_dir, engine
         )
 
         blocks = extraction.pdf_document.all_blocks if extraction.pdf_document else []

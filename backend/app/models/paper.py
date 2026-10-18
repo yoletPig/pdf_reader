@@ -21,6 +21,7 @@ class Paper(Base):
     file_path: Mapped[str] = mapped_column(String(1000), default="")
     markdown_path: Mapped[str] = mapped_column(String(1000), default="")
     tags: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
+    folder_id: Mapped[str] = mapped_column(String(36), default="", index=True)  # 空串 = 未分组
     page_count: Mapped[int] = mapped_column(Integer, default=0)
     pdf_metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     ai_summary_md: Mapped[str] = mapped_column(Text, default="")

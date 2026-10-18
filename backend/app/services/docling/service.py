@@ -110,6 +110,8 @@ class DoclingService:
         pdf_options = PdfPipelineOptions()
         pdf_options.generate_picture_images = True
         pdf_options.generate_page_images = False
+        # 图片导出分辨率倍数：越大越清晰（默认 2.0 偏糊）
+        pdf_options.images_scale = 3.0
         self._converter = DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
@@ -188,15 +190,57 @@ class DoclingService:
             chunks=self._build_chunks(dl_doc, paper_id),
         )
 
+    def _collect_picture_regions(self, dl_doc) -> dict[int, list[tuple[float, float, float, float]]]:
+        """收集所有图片区域 bbox（按页分组），用于过滤图内 OCR 文字。"""
+        regions: dict[int, list[tuple[float, float, float, float]]] = {}
+        for picture in list(getattr(dl_doc, "pictures", []) or []):
+            for prov in list(getattr(picture, "prov", []) or []):
+                page_number = int(getattr(prov, "page_no", 0) or 0)
+                if page_number <= 0:
+                    continue
+                bbox = _bbox_tuple(prov)
+                if bbox[2] > bbox[0] and bbox[3] > bbox[1]:
+                    regions.setdefault(page_number, []).append(bbox)
+        return regions
+
+    @staticmethod
+    def _inside_picture(
+        item_bbox: tuple[float, float, float, float],
+        picture_regions: list[tuple[float, float, float, float]],
+        threshold: float = 0.7,
+    ) -> bool:
+        """文本块面积 ≥ threshold 落在图片区域内 → 判定为图内文字（OCR 产物），应过滤。"""
+        x0, y0, x1, y1 = item_bbox
+        item_area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        if item_area <= 0:
+            return False
+        for px0, py0, px1, py1 in picture_regions:
+            ix0, iy0 = max(x0, px0), max(y0, py0)
+            ix1, iy1 = min(x1, px1), min(y1, py1)
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            if inter / item_area >= threshold:
+                return True
+        return False
+
     def _build_blocks(self, dl_doc) -> list[PDFBlock]:
         blocks: list[PDFBlock] = []
         current_section = ""
+        picture_regions = self._collect_picture_regions(dl_doc)
 
         for idx, (item, level) in enumerate(dl_doc.iterate_items()):
             text = _normalize_text(getattr(item, "text", None))
             label = str(getattr(item, "label", "") or "")
             if not text:
                 continue
+
+            # 过滤图片区域内的 OCR 文字（图内文字不应进入正文/翻译）
+            if label not in ("caption", "title", "section_header", "header"):
+                prov_entries = list(getattr(item, "prov", []) or [])
+                if prov_entries:
+                    item_bbox = _bbox_tuple(prov_entries[0])
+                    item_page = int(getattr(prov_entries[0], "page_no", 0) or 0)
+                    if item_page in picture_regions and self._inside_picture(item_bbox, picture_regions[item_page]):
+                        continue
 
             prov_entries = list(getattr(item, "prov", []) or [])
             page_numbers = sorted(

@@ -405,7 +405,8 @@ class TranslationService:
         from app.services.llm.types import LLMRequest, LLMMessage
         from app.services.prompt.manager import prompt_manager
 
-        prompt_mode = "quick_translate" if mode == TranslationMode.QUICK else "polish_translate"
+        # 已取消快速/严谨双模式区分：统一使用高质量翻译提示词
+        prompt_mode = "polish_translate"
         logger.info(
             "构建 Prompt: mode=%s text_len=%s context_len=%s previous_summary_len=%s reference_pages_len=%s auxiliary_text_len=%s max_tokens=%s",
             prompt_mode,
@@ -480,7 +481,8 @@ class TranslationService:
         from app.services.llm.types import LLMRequest, LLMMessage
         from app.services.prompt.manager import prompt_manager
 
-        prompt_mode = "quick_translate" if mode == TranslationMode.QUICK else "polish_translate"
+        # 已取消快速/严谨双模式区分：统一使用高质量翻译提示词
+        prompt_mode = "polish_translate"
         messages = prompt_manager.build_prompt(
             mode=prompt_mode,
             task="translate_paragraph" if len(text) > 200 else "translate_sentence",

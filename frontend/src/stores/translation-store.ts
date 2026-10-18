@@ -1,60 +1,33 @@
 import { create } from 'zustand'
 
-type TranslationCacheValue = {
-  quick?: string
-  polish?: string
-}
-
-interface TranslationCache {
-  [blockId: string]: TranslationCacheValue
-}
-
+/**
+ * 翻译状态 — 已取消快速/严谨双模式，
+ * 仅保留选段翻译缓存与加载态。
+ */
 interface TranslationState {
-  cache: TranslationCache
-  isLoading: boolean
-  currentMode: 'quick' | 'polish'
-  pageTranslations: Record<number, TranslationCache>
-  setMode: (mode: 'quick' | 'polish') => void
-  setCache: (blockId: string, mode: string, text: string) => void
-  setPageCache: (pageNumber: number, blockId: string, mode: string, text: string) => void
-  setLoading: (loading: boolean) => void
-  clearPageTranslations: (pageNumber: number) => void
+  /** 选段翻译缓存：blockKey -> 译文 */
+  selectionCache: Record<string, string>
+  translatingSelection: boolean
+  /** 正在翻译的页码集合 */
+  translatingPages: number[]
+  setSelectionCache: (blockKey: string, translated: string) => void
+  setTranslatingSelection: (value: boolean) => void
+  setTranslatingPage: (pageNumber: number, value: boolean) => void
+  clearCache: () => void
 }
 
 export const useTranslationStore = create<TranslationState>((set) => ({
-  cache: {},
-  isLoading: false,
-  currentMode: 'quick',
-  pageTranslations: {},
-  setMode: (mode) => set({ currentMode: mode }),
-  setCache: (blockId, mode, text) =>
+  selectionCache: {},
+  translatingSelection: false,
+  translatingPages: [],
+  setSelectionCache: (blockKey, translated) =>
+    set((state) => ({ selectionCache: { ...state.selectionCache, [blockKey]: translated } })),
+  setTranslatingSelection: (value) => set({ translatingSelection: value }),
+  setTranslatingPage: (pageNumber, value) =>
     set((state) => ({
-      cache: {
-        ...state.cache,
-        [blockId]: {
-          ...state.cache[blockId],
-          [mode]: text,
-        },
-      },
+      translatingPages: value
+        ? Array.from(new Set([...state.translatingPages, pageNumber]))
+        : state.translatingPages.filter((p) => p !== pageNumber),
     })),
-  setPageCache: (pageNumber, blockId, mode, text) =>
-    set((state) => ({
-      pageTranslations: {
-        ...state.pageTranslations,
-        [pageNumber]: {
-          ...(state.pageTranslations[pageNumber] || {}),
-          [blockId]: {
-            ...(state.pageTranslations[pageNumber]?.[blockId] || {}),
-            [mode]: text,
-          },
-        },
-      },
-    })),
-  setLoading: (loading) => set({ isLoading: loading }),
-  clearPageTranslations: (pageNumber) =>
-    set((state) => {
-      const rest = { ...state.pageTranslations }
-      delete rest[pageNumber]
-      return { pageTranslations: rest }
-    }),
+  clearCache: () => set({ selectionCache: {} }),
 }))

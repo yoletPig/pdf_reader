@@ -69,7 +69,7 @@ async def health_check():
 
 
 # 注册当前仍保留的 API 路由
-from app.api import papers, search, translation, config, prompts, agent_proxy
+from app.api import papers, search, translation, config, prompts, agent_proxy, chat, folders
 
 app.include_router(papers.router)
 app.include_router(search.router)
@@ -77,3 +77,5 @@ app.include_router(translation.router)
 app.include_router(config.router)
 app.include_router(prompts.router)
 app.include_router(agent_proxy.router)
+app.include_router(chat.router)
+app.include_router(folders.router)

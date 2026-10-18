@@ -12,6 +12,7 @@ from datetime import datetime
 import fitz
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func, or_
 
@@ -63,6 +64,7 @@ def _paper_to_dict(p: Paper) -> dict:
         "file_path": p.file_path,
         "markdown_path": getattr(p, "markdown_path", ""),
         "tags": p.tags,
+        "folder_id": getattr(p, "folder_id", "") or "",
         "page_count": p.page_count,
         "pdf_metadata": _safe_json_loads(p.pdf_metadata_json, {}),
         "ai_summary_md": p.ai_summary_md,
@@ -715,13 +717,13 @@ async def create_paper_from_pdf_bytes(
     )
 
 
-async def _reindex_paper(db: AsyncSession, paper: Paper) -> dict:
+async def _reindex_paper(db: AsyncSession, paper: Paper, engine: str | None = None) -> dict:
     profile = _merge_reader_profile(paper, _index_profile_updates(status="running", error=""))
     paper.is_indexed = False
     await db.commit()
 
     try:
-        ingestion_result = await paper_ingestion_service.ingest(paper, db)
+        ingestion_result = await paper_ingestion_service.ingest(paper, db, engine=engine)
         profile = _merge_reader_profile(
             paper,
             _index_profile_updates(
@@ -912,6 +914,7 @@ async def list_papers(
     source: Optional[str] = None,
     indexed: Optional[bool] = None,
     year: Optional[int] = None,
+    folder_id: Optional[str] = None,
     sort: str = "recent",
     db: AsyncSession = Depends(get_db),
 ):
@@ -945,6 +948,9 @@ async def list_papers(
         if year is not None:
             stmt = stmt.where(Paper.year == year)
             count_stmt = count_stmt.where(Paper.year == year)
+        if folder_id is not None:
+            stmt = stmt.where(Paper.folder_id == folder_id)
+            count_stmt = count_stmt.where(Paper.folder_id == folder_id)
 
         if sort == "title":
             stmt = stmt.order_by(Paper.title.asc(), Paper.added_at.desc())
@@ -1065,6 +1071,18 @@ async def update_reader_profile(
         _merge_reader_profile(paper, data)
         if "ai_summary_md" in data:
             paper.ai_summary_md = data.get("ai_summary_md", "")
+        # 顶层字段特殊处理：阅读进度 / 最后阅读时间
+        if "read_progress" in data:
+            try:
+                paper.read_progress = max(0.0, min(1.0, float(data.get("read_progress") or 0)))
+            except Exception:
+                pass
+        if "last_read_at" in data:
+            value = data.get("last_read_at")
+            try:
+                paper.last_read_at = datetime.fromisoformat(str(value).replace("Z", "")) if value else datetime.utcnow()
+            except Exception:
+                paper.last_read_at = datetime.utcnow()
         await db.commit()
         await db.refresh(paper)
         paper_data = _paper_to_dict(paper)
@@ -1078,17 +1096,35 @@ async def update_reader_profile(
         raise
 
 
+class ReindexRequest(BaseModel):
+    engine: Optional[str] = None  # pymupdf / docling；None = 沿用当前设置
+    save_as_default: bool = False  # True 时把 engine 写入系统设置作为默认引擎
+
+
 @router.post("/{paper_id}/reindex")
 async def reindex_paper(
     paper_id: str,
+    data: Optional[ReindexRequest] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """重建论文 blocks/chunks 索引。"""
+    """重新提取论文内容（blocks/页面文本/markdown）。
+
+    可通过 engine 临时切换 PDF 提取器；save_as_default=True 时同时更新系统设置。
+    """
     paper = await _load_paper_or_404(db, paper_id)
     source_ref = _paper_source_ref(paper)
     if not source_ref or ("://" not in source_ref and not os.path.exists(source_ref)):
-        raise HTTPException(status_code=404, detail="源文档不存在，无法重建索引")
-    return await _reindex_paper(db, paper)
+        raise HTTPException(status_code=404, detail="源文档不存在，无法重新提取")
+
+    engine = data.engine if data and data.engine else None
+    if engine and engine not in ("pymupdf", "docling"):
+        raise HTTPException(status_code=400, detail="engine 仅支持 pymupdf / docling")
+    if engine and data.save_as_default:
+        from app.services import settings_store
+        await settings_store.save_override(db, "pdf.pdf_engine", engine)
+        await settings_store.refresh_pdf_engine_cache(db)
+
+    return await _reindex_paper(db, paper, engine=engine)
 
 
 @router.post("/{paper_id}/reader-profile/refresh")

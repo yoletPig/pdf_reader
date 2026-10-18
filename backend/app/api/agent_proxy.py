@@ -17,7 +17,12 @@ _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "upgrade", "pro
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=settings.AGENT_GATEWAY_URL, timeout=httpx.Timeout(600.0, connect=10.0))
+    # trust_env=False：本机 gateway 调用不经系统代理（避免 HTTP_PROXY 导致 502）
+    return httpx.AsyncClient(
+        base_url=settings.AGENT_GATEWAY_URL,
+        timeout=httpx.Timeout(600.0, connect=10.0),
+        trust_env=False,
+    )
 
 
 async def _invalidate_gateway_config():

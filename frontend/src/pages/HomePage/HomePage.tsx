@@ -1,373 +1,554 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Paper, papersApi } from '../../api/papers'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { papersApi, type Paper } from '../../api/papers'
+import { foldersApi, type FolderItem, type TagCount } from '../../api/folders'
+import { ConfirmDialog, Modal, ThemeToggle, useToast } from '../../components/ui/kit'
 import styles from './HomePage.module.css'
 
-type GroupMode = 'all' | 'source' | 'year'
-type IndexFilter = 'all' | 'indexed' | 'pending'
-type SortMode = 'recent' | 'title' | 'year' | 'progress'
+type NavKey = 'all' | 'uncategorized' | string // string = folder id
 
-const PAGE_SIZE = 24
+function truncate(text: string, max: number) {
+  if (!text) return ''
+  return text.length > max ? text.slice(0, max) + '…' : text
+}
 
-function parseAuthors(value: string) {
+function parseTags(raw: string): string[] {
   try {
-    const parsed = JSON.parse(value || '[]')
-    return Array.isArray(parsed) ? parsed.filter(Boolean).join(', ') : value
+    const parsed = JSON.parse(raw || '[]')
+    return Array.isArray(parsed) ? parsed : []
   } catch {
-    return value || ''
+    return []
   }
 }
 
-function truncateText(value: string, maxLength = 220) {
-  const text = (value || '').trim()
-  if (!text) return '暂无摘要'
-  return text.length > maxLength ? `${text.slice(0, maxLength).trim()}...` : text
-}
-
-function formatDate(value: string) {
-  if (!value) return '未知时间'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未知时间'
-  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
-}
-
-function progressPercent(paper: Paper) {
-  return Math.round(Math.max(0, Math.min(1, paper.read_progress || 0)) * 100)
+function parseAuthors(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw || '[]')
+    if (Array.isArray(parsed)) return parsed.join(', ')
+    return String(parsed || '')
+  } catch {
+    return raw || ''
+  }
 }
 
 export default function HomePage() {
   const navigate = useNavigate()
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const toast = useToast()
+
   const [papers, setPapers] = useState<Paper[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
-  const [total, setTotal] = useState(0)
-  const [currentPage, setCurrentPage] = useState(1)
   const [queryInput, setQueryInput] = useState('')
   const [appliedQuery, setAppliedQuery] = useState('')
-  const [sourceFilter, setSourceFilter] = useState('all')
-  const [indexFilter, setIndexFilter] = useState<IndexFilter>('all')
-  const [sortMode, setSortMode] = useState<SortMode>('recent')
-  const [groupMode, setGroupMode] = useState<GroupMode>('all')
-  const [reindexingId, setReindexingId] = useState('')
+  const [sortMode, setSortMode] = useState<'recent' | 'title' | 'year' | 'progress'>('recent')
+  const [navKey, setNavKey] = useState<NavKey>('all')
+  const [folders, setFolders] = useState<FolderItem[]>([])
+  const [folderCounts, setFolderCounts] = useState({ uncategorized: 0, total: 0 })
+  const [tags, setTags] = useState<TagCount[]>([])
+  const [activeTag, setActiveTag] = useState('')
+  const [dragOver, setDragOver] = useState(false)
 
-  const fetchPapers = async (page: number, query = appliedQuery, source = sourceFilter, indexedState = indexFilter, sort = sortMode) => {
+  // 弹窗状态
+  const [folderModal, setFolderModal] = useState<{ open: boolean; editing?: FolderItem }>({ open: false })
+  const [folderName, setFolderName] = useState('')
+  const [tagModalPaper, setTagModalPaper] = useState<Paper | null>(null)
+  const [tagDraft, setTagDraft] = useState('')
+  const [moveModalPaper, setMoveModalPaper] = useState<Paper | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Paper | null>(null)
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  /* ---------- 数据加载 ---------- */
+
+  const fetchMeta = useCallback(async () => {
+    const [foldersRes, tagsRes] = await Promise.all([foldersApi.list(), foldersApi.allTags()])
+    setFolders(foldersRes.data.folders || [])
+    setFolderCounts({
+      uncategorized: foldersRes.data.uncategorized_count || 0,
+      total: foldersRes.data.total_count || 0,
+    })
+    setTags(tagsRes.data.tags || [])
+  }, [])
+
+  const fetchPapers = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await papersApi.list({
-        page,
-        page_size: PAGE_SIZE,
-        query: query || undefined,
-        source: source === 'all' ? undefined : source,
-        indexed: indexedState === 'all' ? undefined : indexedState === 'indexed',
-        sort,
-      })
+      const params: any = {
+        sort: sortMode,
+        query: appliedQuery,
+        page_size: 100,
+      }
+      if (navKey === 'uncategorized') params.folder_id = ''
+      else if (navKey !== 'all') params.folder_id = navKey
+      if (activeTag) params.tag = activeTag
+      const res = await papersApi.list(params)
       setPapers(res.data.papers || [])
       setTotal(res.data.total || 0)
-      setCurrentPage(res.data.page || page)
-    } catch (err) {
-      console.error(err)
+    } catch {
+      toast.error('加载论文列表失败')
     } finally {
       setLoading(false)
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortMode, appliedQuery, navKey, activeTag])
 
   useEffect(() => {
-    void fetchPapers(currentPage)
-  }, [currentPage, appliedQuery, sourceFilter, indexFilter, sortMode])
+    fetchMeta().catch(() => {})
+    fetchPapers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchPapers])
 
-  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
+  /* ---------- 上传 ---------- */
 
+  const doUpload = async (file: File) => {
     setUploading(true)
     try {
       const formData = new FormData()
       formData.append('file', file)
       const res = await papersApi.upload(formData)
+      toast.success('论文导入成功')
+      await fetchMeta()
+      await fetchPapers()
       navigate(`/reader/${res.data.paper.id}`)
-    } catch (err) {
-      console.error('上传失败:', err)
-      alert('上传失败，请重试')
+    } catch {
+      toast.error('导入失败，请检查文件格式')
     } finally {
       setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
-  const handleDelete = async (event: React.MouseEvent, paperId: string) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (!confirm('确定要删除这篇论文吗？')) return
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) doUpload(file)
+    e.target.value = ''
+  }
+
+  /* ---------- 文件夹 / 标签操作 ---------- */
+
+  const handleSaveFolder = async () => {
+    const name = folderName.trim()
+    if (!name) return
     try {
-      await papersApi.delete(paperId)
-      void fetchPapers(currentPage)
-    } catch (err) {
-      console.error('删除失败:', err)
+      if (folderModal.editing) {
+        await foldersApi.update(folderModal.editing.id, {
+          name,
+          parent_id: folderModal.editing.parent_id,
+          sort_order: folderModal.editing.sort_order,
+        })
+        toast.success('文件夹已更新')
+      } else {
+        await foldersApi.create({ name })
+        toast.success('文件夹已创建')
+      }
+      setFolderModal({ open: false })
+      setFolderName('')
+      await fetchMeta()
+    } catch {
+      toast.error('操作失败')
     }
   }
 
-  const handleReindex = async (event: React.MouseEvent, paperId: string) => {
-    event.preventDefault()
-    event.stopPropagation()
-    setReindexingId(paperId)
+  const handleDeleteFolder = async (folder: FolderItem) => {
     try {
-      await papersApi.reindex(paperId)
-      await fetchPapers(currentPage)
-    } catch (err: any) {
-      console.error('重建索引失败:', err)
-      alert(err?.response?.data?.detail || '重建索引失败，请稍后重试')
-    } finally {
-      setReindexingId('')
+      await foldersApi.delete(folder.id)
+      toast.success(`已删除文件夹「${folder.name}」，论文移至未分组`)
+      if (navKey === folder.id) setNavKey('all')
+      await fetchMeta()
+      await fetchPapers()
+    } catch {
+      toast.error('删除失败')
     }
   }
 
-  const handleSearchSubmit = () => {
-    setCurrentPage(1)
-    setAppliedQuery(queryInput.trim())
+  const handleSaveTags = async () => {
+    if (!tagModalPaper) return
+    const list = tagDraft.split(/[,，\s]+/).map((t) => t.trim()).filter(Boolean)
+    try {
+      await foldersApi.setTags(tagModalPaper.id, list)
+      toast.success('标签已保存')
+      setTagModalPaper(null)
+      await fetchMeta()
+      await fetchPapers()
+    } catch {
+      toast.error('保存失败')
+    }
   }
 
-  const groupedPapers = useMemo(() => {
-    if (groupMode === 'all') {
-      return [{ key: 'all', label: `当前结果 (${papers.length})`, items: papers }]
+  const handleMovePaper = async (folderId: string) => {
+    if (!moveModalPaper) return
+    try {
+      await foldersApi.assignPaper(moveModalPaper.id, folderId)
+      toast.success(folderId ? '已移动到文件夹' : '已移出文件夹')
+      setMoveModalPaper(null)
+      await fetchMeta()
+      await fetchPapers()
+    } catch {
+      toast.error('移动失败')
     }
+  }
 
-    const bucket = new Map<string, { label: string; items: Paper[] }>()
-    for (const paper of papers) {
-      const key = groupMode === 'source'
-        ? (paper.source || 'unknown')
-        : String(paper.year || '未知年份')
-      const label = groupMode === 'source'
-        ? `${paper.source || 'unknown'}`
-        : `${paper.year || '未知年份'}`
-      const entry = bucket.get(key) || { label, items: [] }
-      entry.items.push(paper)
-      bucket.set(key, entry)
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    try {
+      await papersApi.delete(deleteTarget.id)
+      toast.success('论文已删除')
+      setDeleteTarget(null)
+      await fetchMeta()
+      await fetchPapers()
+    } catch {
+      toast.error('删除失败')
     }
+  }
 
-    return Array.from(bucket.entries())
-      .map(([key, value]) => ({ key, label: `${value.label} (${value.items.length})`, items: value.items }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }))
-  }, [groupMode, papers])
-
-  const sourceSummary = useMemo(() => {
-    const counts = papers.reduce<Record<string, number>>((acc, paper) => {
-      const key = paper.source || 'unknown'
-      acc[key] = (acc[key] || 0) + 1
-      return acc
-    }, {})
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([source, count]) => `${source} ${count}`)
-      .join(' · ') || '暂无来源统计'
-  }, [papers])
-
-  const indexedCount = papers.filter((paper) => paper.is_indexed).length
-  const averageProgress = papers.length
-    ? Math.round(papers.reduce((sum, paper) => sum + progressPercent(paper), 0) / papers.length)
-    : 0
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  /* ---------- 渲染 ---------- */
 
   return (
-    <div className={styles.container}>
-      <header className={styles.header}>
-        <div className={styles.headerMain}>
-          <div>
-            <p className={styles.eyebrow}>Knowledge Base</p>
-            <h1>知识库</h1>
-            <p className={styles.subtitle}>为后续大规模归档预留了检索、筛选、分组和分页，不再依赖整页卡片堆叠。</p>
-          </div>
-
-          <div className={styles.headerActions}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.md,.html,.htm,.txt"
-              onChange={handleUpload}
-              style={{ display: 'none' }}
-              id="pdf-upload-input"
-            />
-            <button className={styles.primaryAction} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? '上传中...' : '上传文件'}
-            </button>
-            <Link to="/search" className={styles.secondaryAction}>检索论文</Link>
-            <Link to="/chat" className={styles.secondaryAction}>跨论文问答</Link>
-            <Link to="/settings" className={styles.ghostAction}>设置</Link>
-          </div>
+    <div
+      className={styles.container}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragOver(false)
+        const file = e.dataTransfer.files?.[0]
+        if (file) doUpload(file)
+      }}
+    >
+      {/* ======== 侧栏：文件夹 & 标签 ======== */}
+      <aside className={styles.sidebar}>
+        <div className={styles.brand} onClick={() => setNavKey('all')}>
+          <span className={styles.brandIcon}>📜</span>
+          <span className={styles.brandName}>Papers</span>
         </div>
 
-        <div className={styles.overviewGrid}>
-          <div className={styles.overviewCard}>
-            <span>当前命中</span>
-            <strong>{total}</strong>
-            <small>筛选后总论文数</small>
-          </div>
-          <div className={styles.overviewCard}>
-            <span>已索引</span>
-            <strong>{indexedCount}</strong>
-            <small>当前页可直接用于检索</small>
-          </div>
-          <div className={styles.overviewCard}>
-            <span>平均进度</span>
-            <strong>{averageProgress}%</strong>
-            <small>按当前页阅读进度估算</small>
-          </div>
-          <div className={styles.overviewCard}>
-            <span>来源分布</span>
-            <strong className={styles.overviewText}>{sourceSummary}</strong>
-            <small>便于后续按来源归档</small>
-          </div>
+        <nav className={styles.navSection}>
+          <button
+            className={`${styles.navItem} ${navKey === 'all' ? styles.navActive : ''}`}
+            onClick={() => setNavKey('all')}
+          >
+            <span className={styles.navIcon}>🗂</span>
+            <span className={styles.navLabel}>全部论文</span>
+            <span className={styles.navCount}>{folderCounts.total}</span>
+          </button>
+          <button
+            className={`${styles.navItem} ${navKey === 'uncategorized' ? styles.navActive : ''}`}
+            onClick={() => setNavKey('uncategorized')}
+          >
+            <span className={styles.navIcon}>📄</span>
+            <span className={styles.navLabel}>未分组</span>
+            <span className={styles.navCount}>{folderCounts.uncategorized}</span>
+          </button>
+          <button className={styles.navItem} onClick={() => navigate('/chat')}>
+            <span className={styles.navIcon}>✦</span>
+            <span className={styles.navLabel}>AI 对话</span>
+          </button>
+          <button className={styles.navItem} onClick={() => navigate('/settings')}>
+            <span className={styles.navIcon}>⚙️</span>
+            <span className={styles.navLabel}>系统设置</span>
+          </button>
+        </nav>
+
+        <div className={styles.sectionHeader}>
+          <span>文件夹</span>
+          <button
+            className={styles.sectionAction}
+            title="新建文件夹"
+            onClick={() => { setFolderModal({ open: true }); setFolderName('') }}
+          >
+            ＋
+          </button>
         </div>
-      </header>
-
-      <main className={styles.main}>
-        <section className={styles.controlPanel}>
-          <div className={styles.searchRow}>
-            <input
-              value={queryInput}
-              onChange={(event) => setQueryInput(event.target.value)}
-              onKeyDown={(event) => event.key === 'Enter' && handleSearchSubmit()}
-              placeholder="按标题、摘要、作者检索知识库..."
-              className={styles.searchInput}
-            />
-            <button className={styles.primaryAction} onClick={handleSearchSubmit}>搜索</button>
-          </div>
-
-          <div className={styles.filterRow}>
-            <label className={styles.filterItem}>
-              <span>来源</span>
-              <select value={sourceFilter} onChange={(event) => { setCurrentPage(1); setSourceFilter(event.target.value) }}>
-                <option value="all">全部</option>
-                <option value="local">本地上传</option>
-                <option value="arxiv">arXiv</option>
-                <option value="url">URL 导入</option>
-              </select>
-            </label>
-
-            <label className={styles.filterItem}>
-              <span>状态</span>
-              <select value={indexFilter} onChange={(event) => { setCurrentPage(1); setIndexFilter(event.target.value as IndexFilter) }}>
-                <option value="all">全部</option>
-                <option value="indexed">已索引</option>
-                <option value="pending">未索引</option>
-              </select>
-            </label>
-
-            <label className={styles.filterItem}>
-              <span>排序</span>
-              <select value={sortMode} onChange={(event) => { setCurrentPage(1); setSortMode(event.target.value as SortMode) }}>
-                <option value="recent">最近加入</option>
-                <option value="title">标题 A-Z</option>
-                <option value="year">年份优先</option>
-                <option value="progress">阅读进度</option>
-              </select>
-            </label>
-
-            <label className={styles.filterItem}>
-              <span>归档视图</span>
-              <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as GroupMode)}>
-                <option value="all">单列表</option>
-                <option value="source">按来源分组</option>
-                <option value="year">按年份分组</option>
-              </select>
-            </label>
-          </div>
-        </section>
-
-        {loading ? (
-          <div className={styles.loading}>加载论文列表中...</div>
-        ) : total === 0 ? (
-          <div className={styles.empty}>
-            <p>当前筛选条件下没有论文。</p>
-            <p className={styles.emptyHint}>可以清空筛选、重新检索，或者继续上传 PDF / 从检索页导入。</p>
-          </div>
-        ) : (
-          <>
-            <div className={styles.listHeader}>
-              <span>第 {currentPage}/{totalPages} 页</span>
-              <span>每页 {PAGE_SIZE} 篇</span>
-              <span>{appliedQuery ? `关键词: ${appliedQuery}` : '无关键词限制'}</span>
+        <div className={styles.folderList}>
+          {folders.map((folder) => (
+            <div
+              key={folder.id}
+              className={`${styles.navItem} ${navKey === folder.id ? styles.navActive : ''}`}
+              onClick={() => setNavKey(folder.id)}
+            >
+              <span className={styles.navIcon}>📁</span>
+              <span className={styles.navLabel}>{folder.name}</span>
+              <span className={styles.navCount}>{folder.paper_count}</span>
+              <div className={styles.folderActions}>
+                <button
+                  className={styles.folderAction}
+                  title="重命名"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setFolderModal({ open: true, editing: folder })
+                    setFolderName(folder.name)
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  className={styles.folderAction}
+                  title="删除"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleDeleteFolder(folder)
+                  }}
+                >
+                  🗑
+                </button>
+              </div>
             </div>
+          ))}
+          {folders.length === 0 && <div className={styles.sidebarEmpty}>暂无文件夹</div>}
+        </div>
 
-            <div className={styles.sections}>
-              {groupedPapers.map((group) => (
-                <section key={group.key} className={styles.sectionCard}>
-                  <div className={styles.sectionHeader}>
-                    <h2>{group.label}</h2>
-                  </div>
+        <div className={styles.sectionHeader}>
+          <span>标签</span>
+          {activeTag && (
+            <button className={styles.sectionAction} onClick={() => setActiveTag('')}>✕</button>
+          )}
+        </div>
+        <div className={styles.tagCloud}>
+          {tags.slice(0, 24).map((tag) => (
+            <button
+              key={tag.name}
+              className={`${styles.tagChip} ${activeTag === tag.name ? styles.tagChipActive : ''}`}
+              onClick={() => setActiveTag(activeTag === tag.name ? '' : tag.name)}
+            >
+              {tag.name} <em>{tag.count}</em>
+            </button>
+          ))}
+          {tags.length === 0 && <div className={styles.sidebarEmpty}>暂无标签</div>}
+        </div>
+      </aside>
 
-                  <div className={styles.paperList}>
-                    {group.items.map((paper) => (
-                      <article key={paper.id} className={styles.paperRow}>
-                        <div className={styles.paperMain}>
-                          <div className={styles.paperTop}>
-                            <button className={styles.paperTitle} onClick={() => navigate(`/reader/${paper.id}`)}>
-                              {paper.title || '未命名论文'}
-                            </button>
-                            <div className={styles.paperActions}>
-                              <button className={styles.openBtn} onClick={() => navigate(`/reader/${paper.id}`)}>打开</button>
-                              {!paper.is_indexed ? (
-                                <button
-                                  className={styles.reindexBtn}
-                                  onClick={(event) => void handleReindex(event, paper.id)}
-                                  disabled={reindexingId === paper.id}
-                                >
-                                  {reindexingId === paper.id ? '重建中...' : '重建索引'}
-                                </button>
-                              ) : null}
-                              <button className={styles.deleteBtn} onClick={(event) => void handleDelete(event, paper.id)}>删除</button>
-                            </div>
-                          </div>
+      {/* ======== 主区 ======== */}
+      <main className={styles.main}>
+        <header className={styles.topbar}>
+          <div className={styles.searchBox}>
+            <span className={styles.searchIcon}>🔍</span>
+            <input
+              className={styles.searchInput}
+              placeholder="搜索标题、摘要或作者…"
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') setAppliedQuery(queryInput.trim())
+                if (e.key === 'Escape') { setQueryInput(''); setAppliedQuery('') }
+              }}
+            />
+          </div>
+          <select
+            className="select"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as any)}
+          >
+            <option value="recent">最近添加</option>
+            <option value="title">按标题</option>
+            <option value="year">按年份</option>
+            <option value="progress">按阅读进度</option>
+          </select>
+          <ThemeToggle />
+          <button
+            className="btn btn-primary"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            {uploading ? '导入中…' : '＋ 导入论文'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf"
+            hidden
+            onChange={handleFileInput}
+          />
+        </header>
 
-                          <p className={styles.authors}>{parseAuthors(paper.authors) || '作者信息缺失'}</p>
-                          <p className={styles.abstract}>{truncateText(paper.abstract)}</p>
-                        </div>
-
-                        <div className={styles.paperMeta}>
-                          <div className={styles.metaChips}>
-                            <span>{paper.year || '未知年份'}</span>
-                            <span>{paper.source}</span>
-                            {paper.page_count ? <span>{paper.page_count} 页</span> : null}
-                            <span>{formatDate(paper.added_at)}</span>
-                            {paper.is_indexed ? <span className={styles.goodChip}>已索引</span> : <span>待索引</span>}
-                            {!paper.is_indexed && paper.reader_profile?.indexing_status === 'failed' ? (
-                              <span className={styles.warnChip}>索引失败</span>
-                            ) : null}
-                          </div>
-
-                          <div className={styles.progressBlock}>
-                            <div className={styles.progressLabel}>
-                              <span>阅读进度</span>
-                              <strong>{progressPercent(paper)}%</strong>
-                            </div>
-                            <div className={styles.progressTrack}>
-                              <div className={styles.progressBar} style={{ width: `${progressPercent(paper)}%` }} />
-                            </div>
-                            {!paper.is_indexed && paper.reader_profile?.indexing_error ? (
-                              <p className={styles.indexError}>{String(paper.reader_profile.indexing_error)}</p>
-                            ) : null}
-                          </div>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </section>
+        <div className={styles.content}>
+          {loading ? (
+            <div className={styles.cardGrid}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className={`${styles.card} ${styles.cardSkeleton}`}>
+                  <div className="skeleton" style={{ height: 18, width: '78%' }} />
+                  <div className="skeleton" style={{ height: 12, width: '42%' }} />
+                  <div className="skeleton" style={{ height: 32, width: '100%', marginTop: 8 }} />
+                  <div className="skeleton" style={{ height: 10, width: '55%', marginTop: 12 }} />
+                </div>
               ))}
             </div>
-
-            <div className={styles.pagination}>
-              <button className={styles.pageBtn} onClick={() => setCurrentPage((value) => Math.max(1, value - 1))} disabled={currentPage <= 1}>
-                上一页
-              </button>
-              <div className={styles.pageStatus}>{currentPage} / {totalPages}</div>
-              <button className={styles.pageBtn} onClick={() => setCurrentPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage >= totalPages}>
-                下一页
-              </button>
+          ) : papers.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">📚</div>
+              <div className="empty-title">
+                {appliedQuery || activeTag ? '没有匹配的论文' : '论文库还是空的'}
+              </div>
+              <div className="empty-desc">
+                {appliedQuery || activeTag
+                  ? '换个关键词或筛选条件试试'
+                  : '拖拽 PDF 到此页面，或点击右上角「导入论文」'}
+              </div>
             </div>
-          </>
-        )}
+          ) : (
+            <div className={styles.cardGrid}>
+              {papers.map((paper) => {
+                const paperTags = parseTags(paper.tags)
+                const progress = Math.round((paper.read_progress || 0) * 100)
+                return (
+                  <article
+                    key={paper.id}
+                    className={styles.card}
+                    onClick={() => navigate(`/reader/${paper.id}`)}
+                  >
+                    <div className={styles.cardHeader}>
+                      <h3 className={styles.cardTitle}>{paper.title || '未命名论文'}</h3>
+                      <div className={styles.cardActions}>
+                        <button
+                          className={styles.cardAction}
+                          title="编辑标签"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setTagModalPaper(paper)
+                            setTagDraft(parseTags(paper.tags).join(' '))
+                          }}
+                        >
+                          🏷
+                        </button>
+                        <button
+                          className={styles.cardAction}
+                          title="移动到文件夹"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setMoveModalPaper(paper)
+                          }}
+                        >
+                          📁
+                        </button>
+                        <button
+                          className={`${styles.cardAction} ${styles.cardActionDanger}`}
+                          title="删除"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setDeleteTarget(paper)
+                          }}
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </div>
+                    <div className={styles.cardAuthors}>{paper.authors ? truncate(parseAuthors(paper.authors), 60) : '未知作者'}</div>
+                    {paper.abstract && (
+                      <p className={styles.cardAbstract}>{truncate(paper.abstract, 120)}</p>
+                    )}
+                    <div className={styles.cardChips}>
+                      {paper.year && <span className={styles.metaChip}>{paper.year}</span>}
+                      {paper.page_count ? <span className={styles.metaChip}>{paper.page_count} 页</span> : null}
+                      {paper.source && paper.source !== 'local' && (
+                        <span className={styles.metaChip}>{paper.source}</span>
+                      )}
+                    </div>
+                    {paperTags.length > 0 && (
+                      <div className={styles.cardTags}>
+                        {paperTags.slice(0, 4).map((tag) => (
+                          <span key={tag} className={styles.cardTag}>{tag}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className={styles.cardProgress}>
+                      <div className={styles.progressBar}>
+                        <div className={styles.progressFill} style={{ width: `${progress}%` }} />
+                      </div>
+                      <span className={styles.progressText}>{progress > 0 ? `${progress}%` : ''}</span>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </main>
+
+      {/* 拖拽遮罩 */}
+      {dragOver && (
+        <div className={styles.dropOverlay}>
+          <div className={styles.dropBox}>
+            <div className={styles.dropIcon}>📄</div>
+            <div>松开导入 PDF 论文</div>
+          </div>
+        </div>
+      )}
+
+      {/* 文件夹弹窗 */}
+      <Modal
+        open={folderModal.open}
+        title={folderModal.editing ? '重命名文件夹' : '新建文件夹'}
+        onClose={() => setFolderModal({ open: false })}
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setFolderModal({ open: false })}>取消</button>
+            <button className="btn btn-primary" onClick={handleSaveFolder}>保存</button>
+          </>
+        }
+      >
+        <input
+          className="input"
+          placeholder="文件夹名称"
+          value={folderName}
+          autoFocus
+          onChange={(e) => setFolderName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSaveFolder()}
+        />
+      </Modal>
+
+      {/* 标签编辑弹窗 */}
+      <Modal
+        open={!!tagModalPaper}
+        title="编辑标签"
+        onClose={() => setTagModalPaper(null)}
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setTagModalPaper(null)}>取消</button>
+            <button className="btn btn-primary" onClick={handleSaveTags}>保存</button>
+          </>
+        }
+      >
+        <p className={styles.modalHint}>用空格或逗号分隔多个标签</p>
+        <input
+          className="input"
+          placeholder="例如: 机器学习 NLP 综述"
+          value={tagDraft}
+          autoFocus
+          onChange={(e) => setTagDraft(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSaveTags()}
+        />
+      </Modal>
+
+      {/* 移动文件夹弹窗 */}
+      <Modal
+        open={!!moveModalPaper}
+        title="移动到文件夹"
+        onClose={() => setMoveModalPaper(null)}
+        footer={
+          <button className="btn btn-secondary" onClick={() => setMoveModalPaper(null)}>取消</button>
+        }
+      >
+        <div className={styles.moveList}>
+          <button className={styles.moveItem} onClick={() => handleMovePaper('')}>
+            📄 未分组
+          </button>
+          {folders.map((folder) => (
+            <button key={folder.id} className={styles.moveItem} onClick={() => handleMovePaper(folder.id)}>
+              📁 {folder.name}
+            </button>
+          ))}
+        </div>
+      </Modal>
+
+      {/* 删除确认 */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="删除论文"
+        message={`确定要删除「${deleteTarget?.title || '未命名论文'}」吗？文件与翻译记录将一并删除。`}
+        confirmText="删除"
+        danger
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

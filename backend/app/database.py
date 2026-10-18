@@ -48,6 +48,7 @@ def _apply_lightweight_migrations(sync_conn):
             "source_url": "ALTER TABLE papers ADD COLUMN source_url VARCHAR(1000) DEFAULT ''",
             "document_type": "ALTER TABLE papers ADD COLUMN document_type VARCHAR(50) DEFAULT 'pdf'",
             "markdown_path": "ALTER TABLE papers ADD COLUMN markdown_path VARCHAR(1000) DEFAULT ''",
+            "folder_id": "ALTER TABLE papers ADD COLUMN folder_id VARCHAR(36) DEFAULT ''",
         }
         for column, sql in migrations.items():
             if column not in paper_columns:
