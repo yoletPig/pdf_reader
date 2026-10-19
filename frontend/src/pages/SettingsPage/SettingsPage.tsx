@@ -47,7 +47,7 @@ export default function SettingsPage() {
     }
   }
 
-  const updateField = (key: string, value: string | number) => {
+  const updateField = (key: string, value: string | number | boolean) => {
     setFields(prev => ({
       ...prev,
       [key]: { ...prev[key], value, dirty: true, error: undefined },
@@ -64,7 +64,8 @@ export default function SettingsPage() {
       setFields(prev => ({ ...prev, [field.key]: { ...prev[field.key], dirty: false } }))
       setStatus(`已保存「${field.label}」，立即生效。`)
       await refreshSettings()
-      if (field.key.startsWith('llm.') && field.key !== 'llm.api_key') {
+      // trust_env 只影响传输层，保存后无需重复测试模型连通性
+      if (field.key.startsWith('llm.') && field.key !== 'llm.api_key' && field.key !== 'llm.trust_env') {
         handleTestModel()
       }
     } catch (error: any) {
@@ -117,6 +118,15 @@ export default function SettingsPage() {
           type="number"
           value={Number(field.value ?? 0)}
           onChange={e => updateField(field.key, Number(e.target.value))}
+          {...commonProps}
+        />
+      )
+    } else if (field.type === 'boolean') {
+      control = (
+        <input
+          type="checkbox"
+          checked={Boolean(field.value ?? false)}
+          onChange={e => updateField(field.key, e.target.checked)}
           {...commonProps}
         />
       )

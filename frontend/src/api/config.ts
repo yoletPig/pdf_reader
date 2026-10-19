@@ -14,9 +14,9 @@ export interface AppModelConfig {
 export interface SettingField {
   key: string
   label: string
-  type: 'string' | 'secret' | 'number' | 'enum'
-  value: string | number | null
-  default?: string | number | null
+  type: 'string' | 'secret' | 'number' | 'enum' | 'boolean'
+  value: string | number | boolean | null
+  default?: string | number | boolean | null
   overridden: boolean
   has_value?: boolean
   choices?: Array<{ value: string; label: string }>
@@ -39,7 +39,7 @@ export const configApi = {
   /** 读取全部系统设置（secret 已脱敏） */
   getSettings: () => apiClient.get<SystemSettingsResponse>('/config/settings'),
   /** 保存单个设置项；value 为空字符串/null 表示重置回默认 */
-  saveSetting: (key: string, value: string | number | null) =>
+  saveSetting: (key: string, value: string | number | boolean | null) =>
     apiClient.put('/config/settings', { key, value }),
   /** PDF 引擎列表与当前值 */
   getEngines: () => apiClient.get<{ engines: Array<{ value: string; label: string; description: string }>; current: string }>('/config/engines'),

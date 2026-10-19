@@ -41,6 +41,13 @@ SETTING_GROUPS = {
             {"key": "llm.model", "label": "模型名", "type": "string", "default": ""},
             {"key": "llm.max_tokens", "label": "最大输出 Tokens", "type": "number", "default": 4096},
             {"key": "llm.temperature", "label": "温度", "type": "number", "default": 0.3},
+            {
+                "key": "llm.trust_env",
+                "label": "信任系统代理环境变量",
+                "type": "boolean",
+                "description": "服务器需代理访问模型地址时开启（自动读取 http_proxy/https_proxy）",
+                "default": True,
+            },
         ],
     },
 }
@@ -67,6 +74,8 @@ def _env_default(key: str) -> Any:
         return settings.LLM_MAX_TOKENS
     if key == "llm.temperature":
         return settings.LLM_TEMPERATURE
+    if key == "llm.trust_env":
+        return settings.LLM_TRUST_ENV
     return None
 
 

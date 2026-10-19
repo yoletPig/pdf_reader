@@ -30,9 +30,14 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gpt-4o-mini"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
-    LLM_TRUST_ENV: bool = False
-    LLM_MAX_TOKENS: int = 4096
+    # 是否信任 http_proxy/https_proxy 等环境代理变量。
+    # 服务器需代理访问自定义 LLM 地址时务必开启（默认开启）。
+    LLM_TRUST_ENV: bool = True
+    LLM_MAX_TOKENS: int = 128000
     LLM_TEMPERATURE: float = 0.3
+    # 单次 LLM 请求超时（秒）。长页翻译 + 代理链路可能耗时较久（实测 ~85s），
+    # 默认 300s 避免误杀；过长可调小，超时则按该值失败。
+    LLM_TIMEOUT: float = 300.0
 
     # agent-gateway (Node/pi agent) 服务地址
     AGENT_GATEWAY_URL: str = "http://127.0.0.1:8002"

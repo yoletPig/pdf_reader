@@ -25,7 +25,7 @@ class OpenAIAdapter(BaseAdapter):
         try:
             http_client = httpx.AsyncClient(
                 base_url=config.base_url or "https://api.openai.com/v1",
-                timeout=120.0,
+                timeout=config.timeout_seconds,
                 trust_env=config.trust_env,
             )
         except ImportError as exc:
@@ -36,7 +36,7 @@ class OpenAIAdapter(BaseAdapter):
         self.client = AsyncOpenAI(
             api_key=config.api_key or "not-configured",
             base_url=config.base_url or "https://api.openai.com/v1",
-            timeout=120.0,
+            timeout=config.timeout_seconds,
             http_client=http_client,
         )
 

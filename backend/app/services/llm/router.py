@@ -27,6 +27,7 @@ class LLMRouter:
             max_tokens=settings.LLM_MAX_TOKENS,
             temperature=settings.LLM_TEMPERATURE,
             trust_env=settings.LLM_TRUST_ENV,
+            timeout_seconds=settings.LLM_TIMEOUT,
         )
         self._adapter = OpenAIAdapter(self._config)
         logger.info(

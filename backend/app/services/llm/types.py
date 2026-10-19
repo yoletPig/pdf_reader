@@ -61,3 +61,6 @@ class LLMConfig:
     max_tokens: int = 4096
     temperature: float = 0.3
     trust_env: bool = False
+    # 单次 LLM 请求超时（秒）。长页翻译 + 代理链路可能耗时较久（实测 ~85s），
+    # 默认 300s 避免误杀；可在 .env 用 PDF_READER_LLM_TIMEOUT 覆盖。
+    timeout_seconds: float = 300.0

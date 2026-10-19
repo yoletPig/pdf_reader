@@ -37,7 +37,8 @@ async def _effective_llm_config(db: AsyncSession) -> LLMConfig:
         model=str(overrides.get("llm.model", settings.LLM_MODEL) or ""),
         max_tokens=int(overrides.get("llm.max_tokens", settings.LLM_MAX_TOKENS) or 4096),
         temperature=float(overrides.get("llm.temperature", settings.LLM_TEMPERATURE) or 0.3),
-        trust_env=settings.LLM_TRUST_ENV,
+        trust_env=bool(overrides.get("llm.trust_env", settings.LLM_TRUST_ENV)),
+        timeout_seconds=float(getattr(settings, "LLM_TIMEOUT", 300.0) or 300.0),
     )
 
 
