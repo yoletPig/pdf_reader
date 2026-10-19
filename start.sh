@@ -6,6 +6,10 @@
 #   ./start.sh              # 启动全部（已运行的服务自动跳过）
 #   ./start.sh --no-frontend  # 只启动后端与 agent 服务
 #   ./start.sh backend      # 只启动单个服务 (backend|gateway|frontend)
+#
+# 端口配置（两种方式，环境变量优先）:
+#   1) 临时指定: PDF_READER_BACKEND_PORT=8100 ./start.sh
+#   2) 永久修改: 改下方 BACKEND_PORT/GATEWAY_PORT/FRONTEND_PORT 默认值
 # ============================================================
 set -u
 
@@ -18,13 +22,18 @@ BACKEND_DIR="$ROOT/backend"
 GATEWAY_DIR="$ROOT/agent-gateway"
 FRONTEND_DIR="$ROOT/frontend"
 
-BACKEND_PORT=8000
-GATEWAY_PORT=8002
-FRONTEND_PORT=5173
+# 端口配置：环境变量优先（PDF_READER_*_PORT），否则使用默认值
+BACKEND_PORT="${PDF_READER_BACKEND_PORT:-8000}"
+GATEWAY_PORT="${PDF_READER_GATEWAY_PORT:-8002}"
+FRONTEND_PORT="${PDF_READER_FRONTEND_PORT:-5173}"
 
 BACKEND_LOG="$LOG_DIR/backend.log"
 GATEWAY_LOG="$LOG_DIR/gateway.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
+
+# 服务间互连地址（跟随端口联动，保证代理/工具指向正确）
+BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
+GATEWAY_URL="http://127.0.0.1:$GATEWAY_PORT"
 
 # uvicorn 可能是用户级安装（~/.local/bin），不在 PATH 时手动补
 UVICORN="$(command -v uvicorn || echo "$HOME/.local/bin/uvicorn")"
@@ -77,7 +86,8 @@ start_backend() {
     return 1
   fi
   log_info "启动 backend ..."
-  (cd "$BACKEND_DIR" && nohup "$UVICORN" app.main:app --host 127.0.0.1 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+  (cd "$BACKEND_DIR" && PDF_READER_AGENT_GATEWAY_URL="$GATEWAY_URL" \
+   nohup "$UVICORN" app.main:app --host 127.0.0.1 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
    echo $! > "$PID_DIR/backend.pid")
   if wait_for "http://127.0.0.1:$BACKEND_PORT/api/health" "backend"; then
     log_ok "backend 就绪 (pid $(cat "$PID_DIR/backend.pid"))  日志: $BACKEND_LOG"
@@ -103,7 +113,8 @@ start_gateway() {
     (cd "$GATEWAY_DIR" && npm run build) || { log_err "构建失败"; return 1; }
   fi
   log_info "启动 agent-gateway ..."
-  (cd "$GATEWAY_DIR" && nohup node dist/server.js > "$GATEWAY_LOG" 2>&1 &
+  (cd "$GATEWAY_DIR" && AGENT_GATEWAY_PORT="$GATEWAY_PORT" PDF_READER_BACKEND_URL="$BACKEND_URL" \
+   nohup node dist/server.js > "$GATEWAY_LOG" 2>&1 &
    echo $! > "$PID_DIR/gateway.pid")
   if wait_for "http://127.0.0.1:$GATEWAY_PORT/health" "agent-gateway"; then
     log_ok "agent-gateway 就绪 (pid $(cat "$PID_DIR/gateway.pid"))  日志: $GATEWAY_LOG"
@@ -125,7 +136,8 @@ start_frontend() {
     (cd "$FRONTEND_DIR" && npm install) || { log_err "npm install 失败"; return 1; }
   fi
   log_info "启动 frontend ..."
-  (cd "$FRONTEND_DIR" && nohup npm run dev > "$FRONTEND_LOG" 2>&1 &
+  (cd "$FRONTEND_DIR" && PDF_READER_BACKEND_URL="$BACKEND_URL" \
+   nohup npm run dev -- --port "$FRONTEND_PORT" --strictPort > "$FRONTEND_LOG" 2>&1 &
    echo $! > "$PID_DIR/frontend.pid")
   if wait_for "http://127.0.0.1:$FRONTEND_PORT" "frontend" 45; then
     log_ok "frontend 就绪  日志: $FRONTEND_LOG"

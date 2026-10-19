@@ -13,9 +13,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$ROOT/logs"
 PID_DIR="$LOG_DIR/pids"
 
-BACKEND_PORT=8000
-GATEWAY_PORT=8002
-FRONTEND_PORT=5173
+# 端口配置：与 start.sh 保持一致（环境变量优先）
+BACKEND_PORT="${PDF_READER_BACKEND_PORT:-8000}"
+GATEWAY_PORT="${PDF_READER_GATEWAY_PORT:-8002}"
+FRONTEND_PORT="${PDF_READER_FRONTEND_PORT:-5173}"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 
@@ -26,29 +27,32 @@ log_info() { echo -e "${CYAN}ℹ️  $*${NC}"; }
 
 # ---------- 通用工具 ----------
 
+# 递归收集子孙进程 PID（npm→node 等父子链）
+descendants_of() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    echo "$child"
+    descendants_of "$child"
+  done
+}
+
 kill_tree() {
-  # 优雅终止进程树: 先 TERM 进程组，2s 后仍存活则 KILL
+  # 优雅终止进程树: 先 TERM 整棵树，2s 后仍存活则 KILL
+  # 注意：不能按进程组(-pgid)杀——后台服务共享 shell 进程组，会误杀其他服务
   local pid="$1" name="$2"
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
 
-  # nohup 启动的 shell 子进程可能自成进程组，优先按组杀
-  local pgid
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-  if [ -n "$pgid" ]; then
-    kill -TERM -- "-$pgid" 2>/dev/null
-  else
-    kill -TERM "$pid" 2>/dev/null
-  fi
+  local family
+  family="$(descendants_of "$pid"; echo "$pid")"
+
+  for p in $family; do kill -TERM "$p" 2>/dev/null; done
 
   for _ in 1 2 3 4; do
     kill -0 "$pid" 2>/dev/null || { log_ok "$name 已停止 (pid $pid)"; return 0; }
     sleep 0.5
   done
-  if [ -n "$pgid" ]; then
-    kill -KILL -- "-$pgid" 2>/dev/null
-  else
-    kill -KILL "$pid" 2>/dev/null
-  fi
+
+  for p in $family; do kill -KILL "$p" 2>/dev/null; done
   log_warn "$name 已强制终止 (pid $pid)"
 }
 
