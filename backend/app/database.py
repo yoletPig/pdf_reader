@@ -1,8 +1,16 @@
 """数据库连接管理"""
+from pathlib import Path
+
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from app.config import settings
+
+# SQLite 需要确保父目录存在，否则报 "unable to open database file"
+if settings.DATABASE_URL.startswith("sqlite"):
+    _db_path = settings.DATABASE_URL.split("///", 1)[-1]
+    if _db_path and _db_path != ":memory:":
+        Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_async_engine(
     settings.DATABASE_URL,

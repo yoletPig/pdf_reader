@@ -32,8 +32,9 @@ class OpenAIAdapter(BaseAdapter):
             raise RuntimeError(
                 "当前环境启用了 SOCKS 代理，但缺少 socksio 依赖。请安装 `httpx[socks]` 或 `socksio`。"
             ) from exc
+        # api_key 为空时传占位值，避免启动即抛 OpenAIError（未配置时调用会话/翻译才会报错）
         self.client = AsyncOpenAI(
-            api_key=config.api_key,
+            api_key=config.api_key or "not-configured",
             base_url=config.base_url or "https://api.openai.com/v1",
             timeout=120.0,
             http_client=http_client,
