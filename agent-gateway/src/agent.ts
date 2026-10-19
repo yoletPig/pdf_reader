@@ -8,6 +8,7 @@
  */
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Models, Model } from "@earendil-works/pi-ai";
+import { proxiedFetch } from "./models.js";
 import { paperTools } from "./tools/papers.js";
 
 const SYSTEM_PROMPT = `你是一个论文阅读助手，帮助用户阅读、理解和分析学术论文。
@@ -56,7 +57,10 @@ export function createSession(
       tools: paperTools as AgentTool[],
       messages: [],
     },
-    streamFn: models.streamSimple.bind(models),
+    // streamSimple 支持 options.fetch，注入代理感知 fetch 使 LLM 请求可走
+    // http_proxy/https_proxy（服务器需代理访问自定义 LLM 地址）
+    streamFn: (model, context, options) =>
+      models.streamSimple(model, context, { ...options, fetch: proxiedFetch }),
     sessionId,
     toolExecution: "parallel",
   });

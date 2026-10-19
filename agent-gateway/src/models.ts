@@ -11,6 +11,62 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 
 const BACKEND_URL = process.env.PDF_READER_BACKEND_URL || "http://127.0.0.1:8000";
 
+// ---------------------------------------------------------------------------
+// 代理感知的 fetch（解决"服务器需代理才能访问自定义 LLM 地址"的问题）
+//
+// Node 20 的全局 fetch 不读取 http_proxy/https_proxy 环境变量，而 pi-ai 的
+// openai-completions API 走 openai SDK，默认用全局 fetch → 请求绕过代理，
+// 导致访问需代理的 LLM 端点时连接超时。
+//
+// 方案：注入自定义 fetch，用 undici 的 EnvHttpProxyAgent 自动读取
+// http_proxy/https_proxy/no_proxy 环境变量（backend 工具的 localhost 请求
+// 会被 no_proxy 直连，不受影响）。
+//
+// EnvHttpProxyAgent 在构造时快照环境变量，因此检测到代理环境变化
+// （proxyon/proxyoff）时重建 agent，无需重启进程。
+// ---------------------------------------------------------------------------
+import { fetch as undiciFetch, EnvHttpProxyAgent } from "undici";
+
+let cachedProxyAgent: { agent: EnvHttpProxyAgent; envFingerprint: string } | null = null;
+
+/** 读取当前代理环境变量指纹（http_proxy/https_proxy/no_proxy） */
+function proxyEnvFingerprint(): string {
+  const pick = (name: string) => process.env[name] || "";
+  return [pick("http_proxy"), pick("HTTP_PROXY"), pick("https_proxy"), pick("HTTPS_PROXY"), pick("no_proxy"), pick("NO_PROXY")].join("|");
+}
+
+/** 获取（必要时重建）代理 agent；未配置代理时返回 undefined */
+function getProxyDispatcher(): EnvHttpProxyAgent | undefined {
+  const fp = proxyEnvFingerprint();
+  if (cachedProxyAgent && cachedProxyAgent.envFingerprint === fp) {
+    return cachedProxyAgent.agent;
+  }
+  // 全为空 → 无需代理，直接返回 undefined 让调用方回退到全局 fetch
+  if (!fp.replace(/\|/g, "")) {
+    cachedProxyAgent = null;
+    return undefined;
+  }
+  const agent = new EnvHttpProxyAgent();
+  cachedProxyAgent = { agent, envFingerprint: fp };
+  return agent;
+}
+
+/** 代理感知的 fetch：LLM 请求经代理，no_proxy 中的目标（如 localhost 后端）直连 */
+export function createProxiedFetch() {
+  return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const dispatcher = getProxyDispatcher();
+    // undici 与 DOM 的 RequestInit 类型存在差异，此处显式断言桥接
+    const response = await undiciFetch(input as never, {
+      ...(init as object),
+      ...(dispatcher ? { dispatcher } : {}),
+    } as never);
+    return response as unknown as Response;
+  };
+}
+
+// gateway 默认注入该 fetch（系统设置页模型连通性/问答都会用到）
+export const proxiedFetch = createProxiedFetch();
+
 export interface ModelConfig {
   base_url: string;
   api_key: string;
