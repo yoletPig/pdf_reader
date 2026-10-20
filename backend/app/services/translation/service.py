@@ -15,6 +15,10 @@ MIN_TRUNCATION_CHECK_SOURCE_LENGTH = 800
 MIN_OUTPUT_LENGTH_RATIO = 0.30
 STRUCTURE_ALERT_RATIO = 0.45
 RETRY_MAX_TOKENS = 6144
+# 推理（thinking）模型会先消耗 reasoning_tokens 再输出正文，预算过小会导致正文为空/截断
+# （实测 deepseek-v4-flash 在 max_tokens=4096 时 reasoning 就耗尽全部预算，content_len=0）。
+# 翻译类任务输出较长，需要充足预算；16384 已实测可被 sensenova 端点接受。
+MIN_TRANSLATION_MAX_TOKENS = 16384
 TABLE_HEAVY_CHAR_RATIO = 0.35
 MIN_PROSE_LENGTH_FOR_TABLE_HEAVY = 400
 PREVIEW_CHARS = 180
@@ -217,154 +221,289 @@ class TranslationService:
 
         # 2. 获取术语表
         terminology = terminology_engine.get_all_terms(request.paper_id)
-        default_max_tokens = max(int(getattr(settings, "LLM_MAX_TOKENS", 4096) or 4096), 1)
-
-        # 3. 调用 LLM 翻译；如果结果疑似半截，则自动重试一次。
-        attempt_count = 2 if len(request.text or "") >= MIN_TRUNCATION_CHECK_SOURCE_LENGTH else 1
-        last_error: TranslationQualityError | None = None
-        logger.info(
-            "翻译任务配置: block_id=%s attempt_count=%s default_max_tokens=%s terminology_count=%s",
-            request.block_id,
-            attempt_count,
-            default_max_tokens,
-            len(terminology or {}),
+        default_max_tokens = max(
+            int(getattr(settings, "LLM_MAX_TOKENS", 4096) or 4096),
+            MIN_TRANSLATION_MAX_TOKENS,
         )
 
-        for attempt_idx in range(attempt_count):
-            retry_note = ""
-            max_tokens = default_max_tokens
-            if attempt_idx > 0:
-                retry_note = "上一版输出不完整。请从头返回完整译文，不要省略后半部分，不要在中途停止。"
-                max_tokens = max(RETRY_MAX_TOKENS, default_max_tokens)
-
-            started_at = time.perf_counter()
-            try:
-                translated_text = await self._translate_with_llm(
-                    text=request.text,
-                    mode=request.mode,
-                    context=request.context,
-                    previous_summary=request.previous_summary,
-                    reference_pages=request.reference_pages,
-                    auxiliary_text=request.auxiliary_text,
-                    terminology=terminology,
-                    max_tokens=max_tokens,
-                    retry_note=retry_note,
-                )
-            except Exception as exc:
-                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-                logger.exception(
-                    "翻译 LLM 调用异常: paper_id=%s block_id=%s attempt=%s elapsed_ms=%s error_type=%s error=%s",
-                    request.paper_id,
-                    request.block_id,
-                    attempt_idx + 1,
-                    elapsed_ms,
-                    type(exc).__name__,
-                    exc,
-                )
-                raise
+        # 3. 调用 LLM 翻译（单次尝试：不做截断自动重试，是否重译由用户决定）
+        started_at = time.perf_counter()
+        try:
+            translated_text = await self._translate_with_llm(
+                text=request.text,
+                mode=request.mode,
+                context=request.context,
+                previous_summary=request.previous_summary,
+                reference_pages=request.reference_pages,
+                auxiliary_text=request.auxiliary_text,
+                terminology=terminology,
+                max_tokens=default_max_tokens,
+                retry_note="",
+            )
+        except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-
-            translated_content = translated_text.content if hasattr(translated_text, "content") else translated_text
-            finish_reason = translated_text.finish_reason if hasattr(translated_text, "finish_reason") else ""
-            prompt_tokens = 0
-            completion_tokens = 0
-            if hasattr(translated_text, "usage") and isinstance(translated_text.usage, dict):
-                prompt_tokens = int(translated_text.usage.get("prompt_tokens", 0) or 0)
-                completion_tokens = int(translated_text.usage.get("completion_tokens", 0) or 0)
-
-            truncated, reason = _is_probably_truncated(request.text, translated_content)
-            untranslated, untranslated_reason = _looks_probably_untranslated(request.text, translated_content)
-            language_signals = _translation_language_signals(translated_content)
-            logger.info(
-                "翻译结果: paper_id=%s block_id=%s attempt=%s elapsed_ms=%s source_len=%s output_len=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s skip_cache=%s output_sha=%s cjk_chars=%s latin_words=%s cjk_ratio=%s truncated=%s truncated_reason=%s untranslated=%s untranslated_reason=%s output_preview=%r",
+            logger.exception(
+                "翻译 LLM 调用异常: paper_id=%s block_id=%s elapsed_ms=%s error_type=%s error=%s",
                 request.paper_id,
                 request.block_id,
-                attempt_idx + 1,
                 elapsed_ms,
-                len(request.text or ""),
-                len(translated_content or ""),
-                finish_reason or "unknown",
-                prompt_tokens,
-                completion_tokens,
-                getattr(translated_text, "total_tokens", 0) if hasattr(translated_text, "total_tokens") else 0,
-                request.skip_cache,
-                _text_digest(translated_content or ""),
-                language_signals["cjk_chars"],
-                language_signals["latin_words"],
-                language_signals["cjk_ratio"],
-                truncated,
-                reason,
-                untranslated,
-                untranslated_reason,
-                _text_preview(translated_content or ""),
+                type(exc).__name__,
+                exc,
             )
-            if untranslated:
-                logger.warning(
-                    "翻译结果疑似未翻译: paper_id=%s block_id=%s attempt=%s reason=%s source_preview=%r output_preview=%r",
-                    request.paper_id,
-                    request.block_id,
-                    attempt_idx + 1,
-                    untranslated_reason,
-                    _text_preview(request.text or ""),
-                    _text_preview(translated_content or ""),
-                )
+            raise
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
 
-            should_retry = attempt_idx + 1 < attempt_count and (finish_reason == "length" or truncated)
-            if should_retry:
-                logger.warning(
-                    "检测到疑似截断，准备重试: block_id=%s attempt=%s reason=%s finish_reason=%s",
-                    request.block_id,
-                    attempt_idx + 1,
-                    reason or "length",
-                    finish_reason or "unknown",
-                )
-                continue
+        translated_content = translated_text.content if hasattr(translated_text, "content") else translated_text
+        finish_reason = translated_text.finish_reason if hasattr(translated_text, "finish_reason") else ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        if hasattr(translated_text, "usage") and isinstance(translated_text.usage, dict):
+            prompt_tokens = int(translated_text.usage.get("prompt_tokens", 0) or 0)
+            completion_tokens = int(translated_text.usage.get("completion_tokens", 0) or 0)
 
-            if truncated:
-                last_error = TranslationQualityError(
-                    "翻译结果疑似被截断，已拒绝写入缓存",
-                    source_length=len(request.text or ""),
-                    translated_length=len(translated_content or ""),
-                    finish_reason=finish_reason or "",
-                    retry_count=attempt_idx,
-                    reason=reason,
-                )
-                break
+        # 仅记录质量信号，不再自动重试/拒绝——结果保留，是否重译由用户决定
+        truncated, reason = _is_probably_truncated(request.text, translated_content)
+        untranslated, untranslated_reason = _looks_probably_untranslated(request.text, translated_content)
+        language_signals = _translation_language_signals(translated_content)
+        logger.info(
+            "翻译结果: paper_id=%s block_id=%s elapsed_ms=%s source_len=%s output_len=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s skip_cache=%s output_sha=%s cjk_chars=%s latin_words=%s cjk_ratio=%s truncated=%s truncated_reason=%s untranslated=%s untranslated_reason=%s output_preview=%r",
+            request.paper_id,
+            request.block_id,
+            elapsed_ms,
+            len(request.text or ""),
+            len(translated_content or ""),
+            finish_reason or "unknown",
+            prompt_tokens,
+            completion_tokens,
+            getattr(translated_text, "total_tokens", 0) if hasattr(translated_text, "total_tokens") else 0,
+            request.skip_cache,
+            _text_digest(translated_content or ""),
+            language_signals["cjk_chars"],
+            language_signals["latin_words"],
+            language_signals["cjk_ratio"],
+            truncated,
+            reason,
+            untranslated,
+            untranslated_reason,
+            _text_preview(translated_content or ""),
+        )
+        if truncated:
+            logger.warning(
+                "翻译结果疑似不完整（保留，等待用户判断是否重译）: paper_id=%s block_id=%s reason=%s",
+                request.paper_id,
+                request.block_id,
+                reason,
+            )
 
-            if not request.skip_cache:
-                translation_cache.set(
-                    request.paper_id, request.block_id,
-                    request.mode.value, cache_payload, translated_content
-                )
+        if not request.skip_cache:
+            translation_cache.set(
+                request.paper_id, request.block_id,
+                request.mode.value, cache_payload, translated_content
+            )
+            logger.info(
+                "翻译写入内存缓存: paper_id=%s block_id=%s mode=%s cache_key_sha=%s output_sha=%s",
+                request.paper_id,
+                request.block_id,
+                request.mode.value,
+                _text_digest(cache_payload),
+                _text_digest(translated_content or ""),
+            )
+
+        return TranslationResult(
+            paper_id=request.paper_id,
+            block_id=request.block_id,
+            original_text=request.text,
+            translated_text=translated_content,
+            mode=request.mode,
+            from_cache=False,
+            model_used=translated_text.model if hasattr(translated_text, "model") else "",
+            tokens_used=translated_text.total_tokens if hasattr(translated_text, "total_tokens") else 0,
+            finish_reason=finish_reason or "",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            source_text_length=len(request.text or ""),
+            translated_text_length=len(translated_content or ""),
+            retry_count=0,
+        )
+
+    async def stream_translate_checked(self, request: TranslationRequest) -> AsyncGenerator[dict, None]:
+        """带思考过程反馈的流式翻译（单次尝试，无自动重试；页翻译用）。
+
+        事件:
+          {"event": "thinking", "text": ...}            模型思考过程增量（前端"思考中"反馈）
+          {"event": "delta",    "text": ...}            模型输出增量
+          {"event": "result",   "result": TranslationResult}   最终结果（即使疑似截断也保留）
+          {"event": "error",    "data": {...}}           调用失败
+        """
+        cache_payload = "\n\n".join(
+            part
+            for part in [
+                request.text,
+                request.context,
+                request.previous_summary,
+                request.reference_pages,
+                request.auxiliary_text,
+            ]
+            if part
+        )
+        logger.info(
+            "流式翻译任务开始: paper_id=%s block_id=%s mode=%s source_len=%s context_len=%s previous_summary_len=%s reference_pages_len=%s auxiliary_text_len=%s skip_cache=%s cache_key_sha=%s source_sha=%s",
+            request.paper_id,
+            request.block_id,
+            request.mode.value,
+            len(request.text or ""),
+            len(request.context or ""),
+            len(request.previous_summary or ""),
+            len(request.reference_pages or ""),
+            len(request.auxiliary_text or ""),
+            request.skip_cache,
+            _text_digest(cache_payload),
+            _text_digest(request.text or ""),
+        )
+
+        if not request.skip_cache:
+            cached = translation_cache.get(
+                request.paper_id, request.block_id, request.mode.value, cache_payload
+            )
+            if cached:
                 logger.info(
-                    "翻译写入内存缓存: paper_id=%s block_id=%s mode=%s cache_key_sha=%s output_sha=%s",
+                    "流式翻译缓存命中: paper_id=%s block_id=%s mode=%s cached_len=%s",
                     request.paper_id,
                     request.block_id,
                     request.mode.value,
-                    _text_digest(cache_payload),
-                    _text_digest(translated_content or ""),
+                    len(cached or ""),
                 )
+                yield {
+                    "event": "result",
+                    "result": TranslationResult(
+                        paper_id=request.paper_id,
+                        block_id=request.block_id,
+                        original_text=request.text,
+                        translated_text=cached,
+                        mode=request.mode,
+                        from_cache=True,
+                        source_text_length=len(request.text or ""),
+                        translated_text_length=len(cached or ""),
+                    ),
+                }
+                return
 
-            return TranslationResult(
+        terminology = terminology_engine.get_all_terms(request.paper_id)
+        default_max_tokens = max(
+            int(getattr(settings, "LLM_MAX_TOKENS", 4096) or 4096),
+            MIN_TRANSLATION_MAX_TOKENS,
+        )
+
+        started_at = time.perf_counter()
+        parts: list[str] = []
+        finish_reason = ""
+        model_used = ""
+        usage: dict = {}
+        try:
+            async for event in self._stream_translate_with_llm_meta(
+                text=request.text,
+                mode=request.mode,
+                context=request.context,
+                previous_summary=request.previous_summary,
+                reference_pages=request.reference_pages,
+                auxiliary_text=request.auxiliary_text,
+                terminology=terminology,
+                max_tokens=default_max_tokens,
+                retry_note="",
+            ):
+                if event.get("type") == "thinking":
+                    yield {"event": "thinking", "text": event.get("text", "")}
+                elif event.get("type") == "delta":
+                    chunk_text = event.get("text", "")
+                    parts.append(chunk_text)
+                    yield {"event": "delta", "text": chunk_text}
+                elif event.get("type") == "done":
+                    finish_reason = event.get("finish_reason", "") or ""
+                    model_used = event.get("model", "") or ""
+                    usage = event.get("usage") or {}
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.exception(
+                "流式翻译 LLM 调用异常: paper_id=%s block_id=%s elapsed_ms=%s error_type=%s error=%s",
+                request.paper_id,
+                request.block_id,
+                elapsed_ms,
+                type(exc).__name__,
+                exc,
+            )
+            raise
+
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        translated_content = "".join(parts)
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+
+        # 仅记录质量信号，不再自动重试/拒绝——结果保留，是否重译由用户决定
+        truncated, reason = _is_probably_truncated(request.text, translated_content)
+        untranslated, untranslated_reason = _looks_probably_untranslated(request.text, translated_content)
+        language_signals = _translation_language_signals(translated_content)
+        logger.info(
+            "流式翻译结果: paper_id=%s block_id=%s elapsed_ms=%s source_len=%s output_len=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s skip_cache=%s output_sha=%s cjk_chars=%s latin_words=%s cjk_ratio=%s truncated=%s truncated_reason=%s untranslated=%s untranslated_reason=%s output_preview=%r",
+            request.paper_id,
+            request.block_id,
+            elapsed_ms,
+            len(request.text or ""),
+            len(translated_content or ""),
+            finish_reason or "unknown",
+            prompt_tokens,
+            completion_tokens,
+            request.skip_cache,
+            _text_digest(translated_content or ""),
+            language_signals["cjk_chars"],
+            language_signals["latin_words"],
+            language_signals["cjk_ratio"],
+            truncated,
+            reason,
+            untranslated,
+            untranslated_reason,
+            _text_preview(translated_content or ""),
+        )
+        if truncated:
+            logger.warning(
+                "流式翻译结果疑似不完整（保留，等待用户判断是否重译）: paper_id=%s block_id=%s reason=%s",
+                request.paper_id,
+                request.block_id,
+                reason,
+            )
+
+        if not request.skip_cache:
+            translation_cache.set(
+                request.paper_id, request.block_id,
+                request.mode.value, cache_payload, translated_content
+            )
+            logger.info(
+                "流式翻译写入内存缓存: paper_id=%s block_id=%s mode=%s cache_key_sha=%s output_sha=%s",
+                request.paper_id,
+                request.block_id,
+                request.mode.value,
+                _text_digest(cache_payload),
+                _text_digest(translated_content or ""),
+            )
+
+        yield {
+            "event": "result",
+            "result": TranslationResult(
                 paper_id=request.paper_id,
                 block_id=request.block_id,
                 original_text=request.text,
                 translated_text=translated_content,
                 mode=request.mode,
                 from_cache=False,
-                model_used=translated_text.model if hasattr(translated_text, "model") else "",
-                tokens_used=translated_text.total_tokens if hasattr(translated_text, "total_tokens") else 0,
+                model_used=model_used,
+                tokens_used=int(usage.get("total_tokens", 0) or 0),
                 finish_reason=finish_reason or "",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 source_text_length=len(request.text or ""),
                 translated_text_length=len(translated_content or ""),
-                retry_count=attempt_idx,
-            )
-
-        if last_error:
-            raise last_error
-        raise TranslationQualityError("翻译失败，未生成可接受结果")
+                retry_count=0,
+            ),
+        }
 
     async def stream_translate(
         self, request: TranslationRequest
@@ -402,20 +541,58 @@ class TranslationService:
             logger.warning("LLM 路由器未配置，返回占位文本")
             return f"[LLM 未配置] {text}"
 
-        from app.services.llm.types import LLMRequest, LLMMessage
+        from app.services.llm.types import LLMRequest
+
+        llm_messages = self._build_llm_messages(
+            text=text,
+            context=context,
+            previous_summary=previous_summary,
+            reference_pages=reference_pages,
+            auxiliary_text=auxiliary_text,
+            terminology=terminology,
+            retry_note=retry_note,
+        )
+
+        llm_request = LLMRequest(messages=llm_messages, temperature=0.3, max_tokens=max_tokens)
+        logger.info("调用 LLM 默认模型")
+        response = await self._llm_router.chat(llm_request)
+        logger.info(
+            "LLM 响应成功: model=%s tokens=%s finish_reason=%s content_len=%s content_sha=%s content_preview=%r",
+            response.model,
+            response.total_tokens,
+            response.finish_reason,
+            len(response.content),
+            _text_digest(response.content or ""),
+            _text_preview(response.content or ""),
+        )
+        return response
+
+    def _build_llm_messages(
+        self,
+        *,
+        text: str,
+        context: str = "",
+        previous_summary: str = "",
+        reference_pages: str = "",
+        auxiliary_text: str = "",
+        terminology: dict[str, str] | None = None,
+        retry_note: str = "",
+    ) -> list:
+        """构建翻译 Prompt 消息列表（统一 polish_translate 提示词）。"""
+        from app.services.llm.types import LLMMessage
         from app.services.prompt.manager import prompt_manager
 
         # 已取消快速/严谨双模式区分：统一使用高质量翻译提示词
         prompt_mode = "polish_translate"
         logger.info(
-            "构建 Prompt: mode=%s text_len=%s context_len=%s previous_summary_len=%s reference_pages_len=%s auxiliary_text_len=%s max_tokens=%s",
+            "构建 Prompt: mode=%s text_len=%s context_len=%s previous_summary_len=%s reference_pages_len=%s auxiliary_text_len=%s retry_note=%s",
             prompt_mode,
             len(text),
             len(context or ""),
             len(previous_summary or ""),
             len(reference_pages or ""),
             len(auxiliary_text or ""),
-            max_tokens,
+            bool(retry_note),
         )
 
         effective_context = context
@@ -432,7 +609,7 @@ class TranslationService:
                 "reference_pages": reference_pages,
                 "auxiliary_text": auxiliary_text,
             },
-            terminology=terminology,
+            terminology=terminology or {},
         )
         logger.info(
             "Prompt 构建完成: mode=%s message_count=%s message_lens=%s total_prompt_chars=%s text_sha=%s auxiliary_sha=%s reference_sha=%s",
@@ -444,24 +621,7 @@ class TranslationService:
             _text_digest(auxiliary_text or ""),
             _text_digest(reference_pages or ""),
         )
-
-        llm_messages = [
-            LLMMessage(role=m.role, content=m.content) for m in messages
-        ]
-
-        llm_request = LLMRequest(messages=llm_messages, temperature=0.3, max_tokens=max_tokens)
-        logger.info("调用 LLM 默认模型")
-        response = await self._llm_router.chat(llm_request)
-        logger.info(
-            "LLM 响应成功: model=%s tokens=%s finish_reason=%s content_len=%s content_sha=%s content_preview=%r",
-            response.model,
-            response.total_tokens,
-            response.finish_reason,
-            len(response.content),
-            _text_digest(response.content or ""),
-            _text_preview(response.content or ""),
-        )
-        return response
+        return [LLMMessage(role=m.role, content=m.content) for m in messages]
 
     async def _stream_translate_with_llm(
         self,
@@ -473,36 +633,52 @@ class TranslationService:
         auxiliary_text: str = "",
         terminology: dict[str, str] = {},
     ) -> AsyncGenerator[str, None]:
-        """流式调用 LLM"""
+        """流式调用 LLM（纯文本增量）"""
+        async for event in self._stream_translate_with_llm_meta(
+            text=text,
+            mode=mode,
+            context=context,
+            previous_summary=previous_summary,
+            reference_pages=reference_pages,
+            auxiliary_text=auxiliary_text,
+            terminology=terminology,
+        ):
+            if event.get("type") == "delta":
+                yield event.get("text", "")
+
+    async def _stream_translate_with_llm_meta(
+        self,
+        text: str,
+        mode: TranslationMode,
+        context: str = "",
+        previous_summary: str = "",
+        reference_pages: str = "",
+        auxiliary_text: str = "",
+        terminology: dict[str, str] = {},
+        max_tokens: int = 4096,
+        retry_note: str = "",
+    ) -> AsyncGenerator[dict, None]:
+        """流式调用 LLM（带 finish_reason/usage 元数据）"""
         if not self._llm_router:
-            yield f"[LLM 未配置] {text}"
+            yield {"type": "delta", "text": f"[LLM 未配置] {text}"}
+            yield {"type": "done", "model": "", "finish_reason": "", "usage": {}}
             return
 
-        from app.services.llm.types import LLMRequest, LLMMessage
-        from app.services.prompt.manager import prompt_manager
+        from app.services.llm.types import LLMRequest
 
-        # 已取消快速/严谨双模式区分：统一使用高质量翻译提示词
-        prompt_mode = "polish_translate"
-        messages = prompt_manager.build_prompt(
-            mode=prompt_mode,
-            task="translate_paragraph" if len(text) > 200 else "translate_sentence",
-            variables={
-                "text": text,
-                "context": context,
-                "previous_summary": previous_summary,
-                "reference_pages": reference_pages,
-                "auxiliary_text": auxiliary_text,
-            },
+        llm_messages = self._build_llm_messages(
+            text=text,
+            context=context,
+            previous_summary=previous_summary,
+            reference_pages=reference_pages,
+            auxiliary_text=auxiliary_text,
             terminology=terminology,
+            retry_note=retry_note,
         )
 
-        llm_messages = [
-            LLMMessage(role=m.role, content=m.content) for m in messages
-        ]
-
-        llm_request = LLMRequest(messages=llm_messages, temperature=0.3, max_tokens=4096, stream=True)
-        async for chunk in self._llm_router.stream_chat(llm_request):
-            yield chunk
+        llm_request = LLMRequest(messages=llm_messages, temperature=0.3, max_tokens=max_tokens, stream=True)
+        async for event in self._llm_router.stream_chat_with_meta(llm_request):
+            yield event
 
     def get_cached_for_paper(self, paper_id: str) -> list[dict]:
         """获取论文的翻译缓存"""

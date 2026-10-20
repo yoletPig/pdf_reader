@@ -10,7 +10,7 @@ import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import { papersApi, type Paper } from '../../api/papers'
-import { translationApi, type TranslatePageResponse } from '../../api/translation'
+import { translationApi, streamTranslatePage, type TranslatePageResponse } from '../../api/translation'
 import { useTranslationStore } from '../../stores/translation-store'
 import { Markdown } from '../../components/ui/Markdown'
 import { Segmented, ThemeToggle, ConfirmDialog, useToast, type SegmentedOption } from '../../components/ui/kit'
@@ -95,6 +95,8 @@ export default function ReaderPage() {
   /* ---------- 翻译状态 ---------- */
   const [pageDocs, setPageDocs] = useState<Record<number, TranslatePageResponse>>({})
   const [pageLoading, setPageLoading] = useState<Record<number, boolean>>({})
+  /** 流式翻译草稿：pageNumber -> { text, attempt, thinking }（attempt 变化时丢弃旧增量） */
+  const [pageStreams, setPageStreams] = useState<Record<number, { text: string; attempt: number; thinking: number }>>({})
   const [editingPage, setEditingPage] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState('')
 
@@ -112,6 +114,13 @@ export default function ReaderPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Map<number, HTMLElement>>(new Map())
   const loadedPagesRef = useRef<Set<number>>(new Set())
+  /** 每页流式翻译的 AbortController（重复触发/卸载时取消） */
+  const streamControllersRef = useRef<Map<number, AbortController>>(new Map())
+
+  useEffect(() => () => {
+    streamControllersRef.current.forEach((controller) => controller.abort())
+    streamControllersRef.current.clear()
+  }, [])
 
   /* ---------- 论文加载 ---------- */
   useEffect(() => {
@@ -228,21 +237,70 @@ export default function ReaderPage() {
   /* ---------- 翻译操作 ---------- */
   const handleTranslatePage = useCallback(async (pageNumber: number, force = false) => {
     if (!id) return
+    // 同一页重复触发时先取消进行中的翻译
+    streamControllersRef.current.get(pageNumber)?.abort()
+    const controller = new AbortController()
+    streamControllersRef.current.set(pageNumber, controller)
     setTranslatingPage(pageNumber, true)
+    setPageStreams((prev) => ({ ...prev, [pageNumber]: { text: '', attempt: 1, thinking: 0 } }))
+    let streamError = ''
     try {
-      const res = await translationApi.translatePage({
-        paper_id: id,
-        page_number: pageNumber,
-        force,
-        pdfjs_text: '',
-      })
-      setPageDocs((prev) => ({ ...prev, [pageNumber]: res.data }))
-      loadedPagesRef.current.add(pageNumber)
+      await streamTranslatePage(
+        { paper_id: id, page_number: pageNumber, force, pdfjs_text: '' },
+        (type, payload) => {
+          if (type === 'thinking') {
+            // 思考增量：累计字数用于"思考中"实时反馈
+            const chunkLen = (payload?.text || '').length
+            setPageStreams((prev) => {
+              const current = prev[pageNumber]
+              return {
+                ...prev,
+                [pageNumber]: {
+                  text: current?.text || '',
+                  attempt: current?.attempt || 1,
+                  thinking: (current?.thinking || 0) + chunkLen,
+                },
+              }
+            })
+          } else if (type === 'delta') {
+            const attempt = Number(payload?.attempt || 1)
+            setPageStreams((prev) => {
+              const current = prev[pageNumber]
+              const base = current && current.attempt === attempt ? current.text : ''
+              return {
+                ...prev,
+                [pageNumber]: {
+                  text: base + (payload?.text || ''),
+                  attempt,
+                  thinking: current?.thinking || 0,
+                },
+              }
+            })
+          } else if (type === 'result') {
+            setPageDocs((prev) => ({ ...prev, [pageNumber]: payload as TranslatePageResponse }))
+            loadedPagesRef.current.add(pageNumber)
+          } else if (type === 'error') {
+            streamError = payload?.message || '翻译失败'
+          }
+        },
+        controller.signal,
+      )
+      if (streamError) throw new Error(streamError)
       toast.success(force ? `第 ${pageNumber} 页已重新翻译` : `第 ${pageNumber} 页翻译完成`)
-    } catch {
-      toast.error(`第 ${pageNumber} 页翻译失败`)
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return
+      toast.error(`第 ${pageNumber} 页翻译失败：${(err as Error)?.message || '未知错误'}`)
     } finally {
-      setTranslatingPage(pageNumber, false)
+      // 仅清理属于本次请求的状态（可能已被同页的新请求接管）
+      if (streamControllersRef.current.get(pageNumber) === controller) {
+        streamControllersRef.current.delete(pageNumber)
+        setPageStreams((prev) => {
+          const next = { ...prev }
+          delete next[pageNumber]
+          return next
+        })
+        setTranslatingPage(pageNumber, false)
+      }
     }
   }, [id, setTranslatingPage, toast])
 
@@ -364,6 +422,7 @@ export default function ReaderPage() {
 
   const renderTranslationPane = (pageNumber: number) => {
     const doc = pageDocs[pageNumber]
+    const streamDraft = pageStreams[pageNumber]
     const translating = translatingPages.includes(pageNumber)
     const isEditing = editingPage === pageNumber
 
@@ -422,6 +481,25 @@ export default function ReaderPage() {
             value={editDraft}
             onChange={(e) => setEditDraft(e.target.value)}
           />
+        ) : translating ? (
+          <div className={styles.translationBody}>
+            {streamDraft?.text ? (
+              <>
+                <Markdown>{streamDraft.text}</Markdown>
+                <div className={styles.translationEmpty}>⏳ 正在继续输出…</div>
+              </>
+            ) : (
+              <div className={styles.translationEmpty}>
+                <span
+                  className="spinner"
+                  style={{ width: 12, height: 12, display: 'inline-block', verticalAlign: '-2px', marginRight: 6 }}
+                />
+                {streamDraft?.thinking
+                  ? `模型思考中…（已思考 ${streamDraft.thinking} 字）`
+                  : '翻译中…'}
+              </div>
+            )}
+          </div>
         ) : doc?.translated_markdown ? (
           <div className={styles.translationBody}>
             <Markdown>{doc.translated_markdown}</Markdown>

@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     LLM_TRUST_ENV: bool = True
     LLM_MAX_TOKENS: int = 128000
     LLM_TEMPERATURE: float = 0.3
+    # 推理模型思考程度：default(不传参，跟随模型)/none(关闭，最快)/low/medium/high/xhigh
+    # 仅对支持 reasoning_effort 参数的 OpenAI 兼容端点生效（如 sensenova）
+    LLM_REASONING_EFFORT: str = "default"
     # 单次 LLM 请求超时（秒）。长页翻译 + 代理链路可能耗时较久（实测 ~85s），
     # 默认 300s 避免误杀；过长可调小，超时则按该值失败。
     LLM_TIMEOUT: float = 300.0

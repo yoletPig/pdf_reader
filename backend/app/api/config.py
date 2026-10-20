@@ -38,6 +38,7 @@ async def _effective_llm_config(db: AsyncSession) -> LLMConfig:
         max_tokens=int(overrides.get("llm.max_tokens", settings.LLM_MAX_TOKENS) or 4096),
         temperature=float(overrides.get("llm.temperature", settings.LLM_TEMPERATURE) or 0.3),
         trust_env=bool(overrides.get("llm.trust_env", settings.LLM_TRUST_ENV)),
+        reasoning_effort=str(overrides.get("llm.reasoning_effort", settings.LLM_REASONING_EFFORT) or "default"),
         timeout_seconds=float(getattr(settings, "LLM_TIMEOUT", 300.0) or 300.0),
     )
 
@@ -97,6 +98,63 @@ async def save_setting(data: SaveSettingRequest, db: AsyncSession = Depends(get_
         return {"status": "ok", "action": action}
 
     return {"status": "ok", "action": action}
+
+
+class SaveSettingsBatchRequest(BaseModel):
+    settings: list[SaveSettingRequest]
+
+
+@router.put("/settings/batch")
+async def save_settings_batch(data: SaveSettingsBatchRequest, db: AsyncSession = Depends(get_db)):
+    """批量保存设置项：先整体校验再写入，LLM 配置只热加载一次。"""
+    valid_keys = {
+        settings_store._setting_key(group_name, field["key"])
+        for group_name, group in settings_store.SETTING_GROUPS.items()
+        for field in group["fields"]
+    }
+    # 先整体校验，避免部分写入后失败
+    for item in data.settings:
+        if item.key not in valid_keys:
+            raise HTTPException(status_code=400, detail=f"未知设置项: {item.key}")
+        if item.key == "pdf.pdf_engine":
+            engine = str(item.value or "")
+            if engine not in settings_store.PDF_ENGINE_CHOICES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"pdf_engine 仅支持: {', '.join(settings_store.PDF_ENGINE_CHOICES)}",
+                )
+
+    saved: list = []
+    reset: list = []
+    llm_changed = False
+    pdf_changed = False
+    for item in data.settings:
+        if item.value is None or (isinstance(item.value, str) and item.value == ""):
+            await settings_store.delete_override(db, item.key)
+            reset.append(item.key)
+        else:
+            await settings_store.save_override(db, item.key, item.value)
+            saved.append(item.key)
+        if item.key.startswith("llm."):
+            llm_changed = True
+        elif item.key == "pdf.pdf_engine":
+            pdf_changed = True
+
+    result = {"status": "ok", "saved": saved, "reset": reset}
+    if pdf_changed:
+        result["pdf_engine"] = await settings_store.refresh_pdf_engine_cache(db)
+
+    if llm_changed:
+        cfg = await _effective_llm_config(db)
+        from app.services.llm import llm_router
+        await llm_router.apply_config(cfg)
+        # 通知 agent-gateway 重新拉取模型配置
+        try:
+            from app.api.agent_proxy import _invalidate_gateway_config
+            await _invalidate_gateway_config()
+        except Exception:
+            pass
+    return result
 
 
 @router.get("/model")

@@ -1,13 +1,16 @@
 """翻译 API"""
 import asyncio
+import json
 import traceback
 import hashlib
 import logging
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import AsyncGenerator
 import fitz
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -64,6 +67,30 @@ def _text_digest(text: str) -> str:
 
 def _text_preview(text: str, max_chars: int = 160) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())[:max_chars]
+
+
+def _sse_frame(event: str, data) -> str:
+    """SSE 帧：event + JSON data"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _page_event(event: str, data) -> dict:
+    return {"event": event, "data": data}
+
+
+def _parse_page_request(data: dict) -> tuple[str, int, TranslationMode, bool, str]:
+    """校验并解析页翻译请求参数（阻塞/流式端点共用）。"""
+    paper_id = data.get("paper_id", "")
+    if not paper_id:
+        raise HTTPException(status_code=400, detail="缺少 paper_id")
+    page_number = max(1, int(data.get("page_number", 1) or 1))
+    try:
+        mode = TranslationMode(data.get("mode", "quick"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效翻译模式")
+    force = bool(data.get("force", False))
+    pdfjs_text = data.get("pdfjs_text", "") or ""
+    return paper_id, page_number, mode, force, pdfjs_text
 
 
 def _extract_markdown_images(markdown: str) -> tuple[str, list[dict[str, str]]]:
@@ -718,31 +745,32 @@ async def get_translation_cache_entry(
     return {"paper_id": paper_id, "entry": _serialize_cache_row(row)}
 
 
-@router.post("/page")
-async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
-    """整页翻译 - 直接读取后端保存的页级 markdown，翻译后落盘。"""
-    try:
-        paper_id = data.get("paper_id", "")
-        page_number = max(1, int(data.get("page_number", 1) or 1))
-        mode = TranslationMode(data.get("mode", "quick"))
-        force = bool(data.get("force", False))
+async def _translate_page_events(
+    paper_id: str,
+    page_number: int,
+    mode: TranslationMode,
+    force: bool,
+    pdfjs_text: str = "",
+) -> AsyncGenerator[dict, None]:
+    """整页翻译完整流程（事件生成器），阻塞端点与 SSE 端点共用。
 
-        if not paper_id:
-            raise HTTPException(status_code=400, detail="缺少 paper_id")
+    事件: result / delta / retry / error
+    """
+    db = async_session_factory()
+    try:
         logger.info(
-            "页翻译请求开始: paper_id=%s page=%s mode=%s force=%s request_keys=%s",
+            "页翻译请求开始: paper_id=%s page=%s mode=%s force=%s pdfjs_text_len=%s",
             paper_id,
             page_number,
             mode.value,
             force,
-            sorted(data.keys()),
+            len(pdfjs_text or ""),
         )
 
         paper = await _load_paper_or_404(db, paper_id)
         page_source = await _load_page_source(db, paper_id, page_number)
         source_markdown = (page_source.get("markdown") or "").strip()
         source_text = page_source.get("text") or ""
-        pdfjs_text = data.get("pdfjs_text", "") or ""
         pymupdf_text = _extract_pdf_page_text_with_pymupdf(getattr(paper, "file_path", "") or "", page_number)
         current_page_text, current_text_source = _pick_current_page_text(
             pdfjs_text=pdfjs_text,
@@ -773,7 +801,7 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 len(source_text or ""),
                 len(source_markdown or ""),
             )
-            return {
+            yield _page_event("result", {
                 "paper_id": paper_id,
                 "page_number": page_number,
                 "mode": mode.value,
@@ -795,7 +823,8 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 "edited_by_user": False,
                 "edited_at": None,
                 "user_notes": "",
-            }
+            })
+            return
 
         translated_path = _paper_translation_page_path(paper_id, mode.value, page_number)
         block_id = f"page-{page_number}-{mode.value}"
@@ -859,7 +888,7 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 _text_digest(existing.original_text if existing else ""),
                 _text_digest(translated_markdown or ""),
             )
-            return {
+            yield _page_event("result", {
                 "paper_id": paper_id,
                 "page_number": page_number,
                 "mode": mode.value,
@@ -881,7 +910,8 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
                 "edited_by_user": existing.edited_by_user if existing else False,
                 "edited_at": existing.edited_at.isoformat() if existing and existing.edited_at else None,
                 "user_notes": existing.user_notes if existing else "",
-            }
+            })
+            return
         if not force and translated_path.exists():
             logger.warning(
                 "页翻译持久化缓存过期，将重新翻译: paper_id=%s page=%s mode=%s existing_source_sha=%s current_source_sha=%s existing_source_len=%s current_source_len=%s has_db_cache=%s",
@@ -910,7 +940,21 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             auxiliary_text=auxiliary_text,
             skip_cache=force,
         )
-        result = await translation_service.translate(request)
+        result = None
+        async for event in translation_service.stream_translate_checked(request):
+            if event["event"] == "delta":
+                yield _page_event("delta", {"attempt": event.get("attempt", 1), "text": event["text"]})
+            elif event["event"] == "thinking":
+                yield _page_event("thinking", {"text": event["text"]})
+            elif event["event"] == "error":
+                yield _page_event("error", event["data"])
+                return
+            elif event["event"] == "result":
+                result = event["result"]
+                break
+        if result is None:
+            yield _page_event("error", {"status_code": 500, "kind": "internal", "message": "翻译未产生结果"})
+            return
         translated_markdown = _restore_markdown_tokens(result.translated_text, formulas)
         translated_markdown = _restore_markdown_images(translated_markdown, images)
         logger.info(
@@ -963,7 +1007,7 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             _text_digest(translated_markdown or ""),
         )
 
-        return {
+        yield _page_event("result", {
             "paper_id": paper_id,
             "page_number": page_number,
             "mode": mode.value,
@@ -985,33 +1029,119 @@ async def translate_page(data: dict, db: AsyncSession = Depends(get_db)):
             "edited_by_user": False,
             "edited_at": None,
             "user_notes": existing.user_notes if existing else "",
-        }
+        })
+        return
     except TranslationQualityError as e:
         logger.error(
             "页翻译结果被拒绝: paper_id=%s page=%s source_len=%s output_len=%s finish_reason=%s retry_count=%s reason=%s",
-            data.get("paper_id", ""),
-            data.get("page_number", 1),
+            paper_id,
+            page_number,
             e.source_length,
             e.translated_length,
             e.finish_reason,
             e.retry_count,
             e.reason,
         )
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": str(e),
-                "reason": e.reason,
-                "source_text_length": e.source_length,
-                "translated_text_length": e.translated_length,
-                "finish_reason": e.finish_reason,
-                "retry_count": e.retry_count,
-            },
-        )
-    except HTTPException:
-        raise
+        yield _page_event("error", {
+            "status_code": 502,
+            "kind": "quality",
+            "message": str(e),
+            "reason": e.reason,
+            "source_text_length": e.source_length,
+            "translated_text_length": e.translated_length,
+            "finish_reason": e.finish_reason,
+            "retry_count": e.retry_count,
+        })
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        yield _page_event("error", {"status_code": e.status_code, "kind": "internal", "message": detail})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(
+            "页翻译失败: paper_id=%s page=%s error_type=%s error=%s",
+            paper_id,
+            page_number,
+            type(e).__name__,
+            e,
+        )
+        yield _page_event("error", {"status_code": 500, "kind": "internal", "message": f"{type(e).__name__}: {e}"})
+    finally:
+        await db.close()
+
+
+@router.post("/page")
+async def translate_page(data: dict):
+    """整页翻译（阻塞式）。流式版本见 POST /api/translate/page/stream。"""
+    paper_id, page_number, mode, force, pdfjs_text = _parse_page_request(data)
+    final = None
+    async for event in _translate_page_events(paper_id, page_number, mode, force, pdfjs_text):
+        if event["event"] == "result":
+            final = event["data"]
+        elif event["event"] == "error":
+            payload = event["data"]
+            if payload.get("kind") == "quality":
+                raise HTTPException(
+                    status_code=payload.get("status_code", 502),
+                    detail={key: value for key, value in payload.items() if key not in ("status_code", "kind")},
+                )
+            raise HTTPException(status_code=payload.get("status_code", 500), detail=payload.get("message", "翻译失败"))
+    if final is None:
+        raise HTTPException(status_code=500, detail="翻译未产生结果")
+    return final
+
+
+_PING_FRAME = ": ping\n\n"
+
+
+@router.post("/page/stream")
+async def translate_page_stream(data: dict):
+    """整页翻译（SSE 流式）：边生成边输出 delta 帧，结束输出 result 帧。
+
+    帧格式: event: delta|retry|result|error + data: {...}
+    流式输出可避免长页面翻译被客户端/代理超时中断，并支持实时预览；
+    每 15s 发送 SSE 注释帧心跳保活。
+    """
+    paper_id, page_number, mode, force, pdfjs_text = _parse_page_request(data)
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+        finished = object()
+
+        async def pump():
+            try:
+                async for event in _translate_page_events(paper_id, page_number, mode, force, pdfjs_text):
+                    await queue.put(_sse_frame(event["event"], event["data"]))
+            except Exception as exc:  # 兜底：内部异常转为 error 帧
+                logger.exception("页翻译流异常: paper_id=%s page=%s error=%s", paper_id, page_number, exc)
+                await queue.put(_sse_frame(
+                    "error",
+                    {"status_code": 500, "kind": "internal", "message": f"{type(exc).__name__}: {exc}"},
+                ))
+            finally:
+                await queue.put(finished)
+
+        task = asyncio.create_task(pump())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield _PING_FRAME  # 心跳保活，避免空闲超时
+                    continue
+                if item is finished:
+                    break
+                yield item
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.put("/page")

@@ -28,6 +28,7 @@ class LLMRouter:
             temperature=settings.LLM_TEMPERATURE,
             trust_env=settings.LLM_TRUST_ENV,
             timeout_seconds=settings.LLM_TIMEOUT,
+            reasoning_effort=settings.LLM_REASONING_EFFORT,
         )
         self._adapter = OpenAIAdapter(self._config)
         logger.info(
@@ -84,6 +85,18 @@ class LLMRouter:
             request.model = model
         async for chunk in adapter.stream_chat(request):
             yield chunk
+
+    async def stream_chat_with_meta(
+        self,
+        request: LLMRequest,
+        model: str = "",
+    ) -> AsyncGenerator[dict, None]:
+        """流式对话（带 finish_reason/usage 元数据）"""
+        adapter = self._get_adapter()
+        if model:
+            request.model = model
+        async for event in adapter.stream_chat_with_meta(request):
+            yield event
 
     async def close_all(self):
         """关闭所有适配器的连接"""

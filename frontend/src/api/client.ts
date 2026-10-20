@@ -2,7 +2,8 @@ import axios from 'axios'
 
 const apiClient = axios.create({
   baseURL: '/api',
-  timeout: 120000,
+  // 与后端 LLM_TIMEOUT(300s) 对齐，避免长文本翻译在后端完成前被客户端中断
+  timeout: 300000,
   headers: {
     'Content-Type': 'application/json',
   },

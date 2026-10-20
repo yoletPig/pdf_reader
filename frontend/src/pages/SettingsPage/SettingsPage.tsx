@@ -18,7 +18,7 @@ export default function SettingsPage() {
   const [fields, setFields] = useState<Record<string, EditableField>>({})
   const [testing, setTesting] = useState(false)
   const [status, setStatus] = useState('')
-  const [savingKey, setSavingKey] = useState('')
+  const [savingAll, setSavingAll] = useState(false)
   const [gatewayStatus, setGatewayStatus] = useState<string>('')
 
   useEffect(() => {
@@ -54,28 +54,41 @@ export default function SettingsPage() {
     }))
   }
 
-  const saveField = async (field: EditableField) => {
-    if (!field.dirty) return
-    setSavingKey(field.key)
+  const dirtyCount = Object.values(fields).filter(f => f.dirty).length
+
+  const saveAll = async () => {
+    const dirty = Object.values(fields).filter(f => f.dirty)
+    if (!dirty.length || savingAll) return
+    setSavingAll(true)
     setStatus('')
     try {
-      const value = field.value === '' ? null : field.value
-      await configApi.saveSetting(field.key, value)
-      setFields(prev => ({ ...prev, [field.key]: { ...prev[field.key], dirty: false } }))
-      setStatus(`已保存「${field.label}」，立即生效。`)
-      await refreshSettings()
-      // trust_env 只影响传输层，保存后无需重复测试模型连通性
-      if (field.key.startsWith('llm.') && field.key !== 'llm.api_key' && field.key !== 'llm.trust_env') {
-        handleTestModel()
+      // secret 留空表示保持不变，不提交；其他空值表示重置回默认
+      const items = dirty
+        .filter(f => !(f.type === 'secret' && f.has_value && f.value === ''))
+        .map(f => ({ key: f.key, value: f.value === '' ? null : f.value }))
+      if (!items.length) {
+        await refreshSettings()
+        setStatus('没有需要保存的修改。')
+        return
       }
+      await configApi.saveSettings(items)
+      // trust_env 只影响传输层，保存后无需重复测试模型连通性
+      const llmTouched = items.some(
+        i => i.key.startsWith('llm.') && i.key !== 'llm.api_key' && i.key !== 'llm.trust_env',
+      )
+      await refreshSettings()
+      setStatus(`✅ 已保存 ${items.length} 项设置，立即生效。`)
+      if (llmTouched) handleTestModel()
     } catch (error: any) {
-      setFields(prev => ({
-        ...prev,
-        [field.key]: { ...prev[field.key], error: error?.response?.data?.detail || '保存失败' },
-      }))
+      setStatus(`❌ 保存失败: ${error?.response?.data?.detail || error.message}`)
     } finally {
-      setSavingKey('')
+      setSavingAll(false)
     }
+  }
+
+  const discardChanges = () => {
+    refreshSettings()
+    setStatus('已放弃未保存的修改。')
   }
 
   const handleTestModel = async () => {
@@ -97,7 +110,7 @@ export default function SettingsPage() {
 
   const renderField = (field: EditableField) => {
     const commonProps = {
-      disabled: savingKey === field.key,
+      disabled: savingAll,
     }
     let control: React.ReactNode = null
     if (field.type === 'enum') {
@@ -147,17 +160,11 @@ export default function SettingsPage() {
         <label className={styles.fieldLabel}>
           <span>{field.label}</span>
           {field.overridden ? <span className={styles.overriddenBadge}>已自定义</span> : null}
+          {field.dirty ? <span className={styles.dirtyBadge}>未保存</span> : null}
         </label>
         {field.description ? <p className={styles.fieldHint}>{field.description}</p> : null}
         <div className={styles.fieldRow}>
           {control}
-          <button
-            className="btn btn-secondary"
-            onClick={() => saveField(field)}
-            disabled={!field.dirty || savingKey === field.key}
-          >
-            {savingKey === field.key ? '保存中...' : '保存'}
-          </button>
         </div>
         {field.error ? <p className={styles.fieldError}>{field.error}</p> : null}
       </div>
@@ -180,6 +187,21 @@ export default function SettingsPage() {
         </nav>
 
         <main className={styles.content}>
+          {(activeTab === 'pdf' || activeTab === 'model') && (
+            <div className={styles.saveBar}>
+              <span className={dirtyCount ? `${styles.saveInfo} ${styles.saveInfoDirty}` : styles.saveInfo}>
+                {dirtyCount ? `有 ${dirtyCount} 项未保存的修改` : '所有修改已保存'}
+              </span>
+              <div className={styles.saveActions}>
+                <button className="btn btn-ghost" onClick={discardChanges} disabled={!dirtyCount || savingAll}>
+                  放弃更改
+                </button>
+                <button className="btn btn-primary" onClick={saveAll} disabled={!dirtyCount || savingAll}>
+                  {savingAll ? '保存中...' : `保存所有修改${dirtyCount ? `（${dirtyCount}）` : ''}`}
+                </button>
+              </div>
+            </div>
+          )}
           {status ? <div className={styles.statusBar}>{status}</div> : null}
 
           {(activeTab === 'pdf' || activeTab === 'model') && groups[activeTab] && (

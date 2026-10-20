@@ -11,6 +11,17 @@ from app.services.llm.types import LLMRequest, LLMResponse, LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# 推理模型思考程度白名单（sensenova 实测合法值：low/medium/high/xhigh/none）
+REASONING_EFFORT_VALUES = {"none", "low", "medium", "high", "xhigh"}
+
+
+def _reasoning_effort_params(config: LLMConfig) -> dict:
+    """思考程度请求参数：default/非法值不传参（跟随模型默认）。"""
+    value = (getattr(config, "reasoning_effort", "") or "").strip().lower()
+    if value in REASONING_EFFORT_VALUES:
+        return {"extra_body": {"reasoning_effort": value}}
+    return {}
+
 
 class OpenAIAdapter(BaseAdapter):
     provider = "openai"
@@ -67,6 +78,7 @@ class OpenAIAdapter(BaseAdapter):
                 top_p=request.top_p,
                 stop=request.stop,
                 stream=False,
+                **_reasoning_effort_params(self.config),
             )
         except APIStatusError as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -123,6 +135,7 @@ class OpenAIAdapter(BaseAdapter):
             top_p=request.top_p,
             stop=request.stop,
             stream=True,
+            **_reasoning_effort_params(self.config),
         )
         async for chunk in stream:
             if not chunk.choices:
@@ -130,6 +143,75 @@ class OpenAIAdapter(BaseAdapter):
             content = chunk.choices[0].delta.content or ""
             if content:
                 yield content
+
+    async def stream_chat_with_meta(self, request: LLMRequest) -> AsyncGenerator[dict, None]:
+        """流式对话（带元数据）：yield {"type": "delta", "text": ...}，结束时 yield {"type": "done", ...}。"""
+        model = request.model or self.config.model
+        max_tokens = request.max_tokens or self.config.max_tokens
+        temperature = request.temperature if request.temperature is not None else self.config.temperature
+        logger.info(
+            "OpenAI stream 请求: model=%s base_url=%s msg_count=%s max_tokens=%s temperature=%s trust_env=%s",
+            model,
+            self.config.base_url,
+            len(request.messages),
+            max_tokens,
+            temperature,
+            self.config.trust_env,
+        )
+        started_at = time.perf_counter()
+        stream = await self.client.chat.completions.create(
+            model=model,
+            messages=self._build_messages(request),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=request.top_p,
+            stop=request.stop,
+            stream=True,
+            **_reasoning_effort_params(self.config),
+        )
+        finish_reason = ""
+        usage: dict = {}
+        content_len = 0
+        thinking_len = 0
+        async for chunk in stream:
+            usage_raw = getattr(chunk, "usage", None)
+            if usage_raw is not None:
+                usage = usage_raw.model_dump() if hasattr(usage_raw, "model_dump") else {}
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if getattr(choice, "finish_reason", None):
+                finish_reason = choice.finish_reason
+            delta = choice.delta
+            # 推理模型：reasoning_content 思考过程单独转发（用于前端"思考中"反馈）
+            reasoning = getattr(delta, "reasoning_content", None)
+            if not reasoning:
+                extra = getattr(delta, "model_extra", None) or {}
+                reasoning = extra.get("reasoning_content")
+            if reasoning:
+                thinking_len += len(reasoning)
+                yield {"type": "thinking", "text": reasoning}
+                continue
+            content = delta.content or ""
+            if content:
+                content_len += len(content)
+                yield {"type": "delta", "text": content}
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "OpenAI stream 响应结束: model=%s elapsed_ms=%s finish_reason=%s usage=%s content_len=%s thinking_len=%s",
+            model,
+            elapsed_ms,
+            finish_reason or "unknown",
+            usage,
+            content_len,
+            thinking_len,
+        )
+        yield {
+            "type": "done",
+            "model": model,
+            "finish_reason": finish_reason,
+            "usage": usage,
+        }
 
     async def close(self):
         await self.client.close()

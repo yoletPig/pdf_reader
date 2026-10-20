@@ -48,6 +48,21 @@ SETTING_GROUPS = {
                 "description": "服务器需代理访问模型地址时开启（自动读取 http_proxy/https_proxy）",
                 "default": True,
             },
+            {
+                "key": "llm.reasoning_effort",
+                "label": "思考程度",
+                "type": "enum",
+                "choices": [
+                    {"value": "default", "label": "默认（跟随模型）"},
+                    {"value": "none", "label": "关闭思考（最快）"},
+                    {"value": "low", "label": "低"},
+                    {"value": "medium", "label": "中"},
+                    {"value": "high", "label": "高"},
+                    {"value": "xhigh", "label": "超高（最深）"},
+                ],
+                "default": "default",
+                "description": "推理模型的思考深度：关闭可显著加快翻译/对话响应，加深可提升复杂内容质量。仅对支持 reasoning_effort 参数的端点生效",
+            },
         ],
     },
 }
@@ -74,6 +89,8 @@ def _env_default(key: str) -> Any:
         return settings.LLM_MAX_TOKENS
     if key == "llm.temperature":
         return settings.LLM_TEMPERATURE
+    if key == "llm.reasoning_effort":
+        return settings.LLM_REASONING_EFFORT
     if key == "llm.trust_env":
         return settings.LLM_TRUST_ENV
     return None

@@ -69,10 +69,71 @@ export const translationApi = {
     apiClient.get<TranslatePageResponse>('/translate/page', {
       params: { paper_id: paperId, page_number: pageNumber },
     }),
-  /** 翻译某页（force=true 时重新翻译） */
+  /** 翻译某页（force=true 时重新翻译）；阻塞式，流式版见 streamTranslatePage */
   translatePage: (data: TranslatePageRequest) =>
     apiClient.post<TranslatePageResponse>('/translate/page', data),
   /** 保存用户修订的译文 */
   updateTranslatedPage: (data: UpdateTranslatedPageRequest) =>
     apiClient.put<TranslatePageResponse>('/translate/page', data),
+}
+
+/** 页翻译流式事件（SSE 帧） */
+export interface TranslatePageStreamEvent {
+  /** thinking: 模型思考增量；delta: 译文增量；result: 最终结果；error: 失败 */
+  type: 'thinking' | 'delta' | 'result' | 'error'
+  data: {
+    attempt?: number
+    text?: string
+    message?: string
+    [key: string]: any
+  }
+}
+
+/**
+ * 流式页翻译（SSE）：边生成边返回增量，避免长页面翻译被超时中断。
+ * 返回 controller 便于取消；onEvent(type, data) 逐帧回调。
+ */
+export async function streamTranslatePage(
+  data: TranslatePageRequest,
+  onEvent: (type: string, data: any) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch('/api/translate/page/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    throw new Error((await response.text()) || '无法建立翻译流')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const dispatch = (frame: string) => {
+    let type = 'message'
+    const dataLines: string[] = []
+    for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith('event:')) type = line.slice(6).trim()
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+    }
+    if (!dataLines.length) return
+    try {
+      onEvent(type, JSON.parse(dataLines.join('\n')))
+    } catch {
+      /* 忽略无法解析的帧 */
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const frames = buffer.split(/\r?\n\r?\n/)
+    buffer = frames.pop() || ''
+    for (const frame of frames) dispatch(frame)
+    if (done) break
+  }
+  if (buffer.trim()) dispatch(buffer)
 }
