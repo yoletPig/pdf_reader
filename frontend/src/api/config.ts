@@ -14,13 +14,15 @@ export interface AppModelConfig {
 export interface SettingField {
   key: string
   label: string
-  type: 'string' | 'secret' | 'number' | 'enum' | 'boolean'
-  value: string | number | boolean | null
-  default?: string | number | boolean | null
+  type: 'string' | 'secret' | 'number' | 'enum' | 'boolean' | 'text' | 'list'
+  value: string | number | boolean | null | Array<Record<string, any>> | Record<string, any>
+  default?: string | number | boolean | null | Array<Record<string, any>> | Record<string, any>
   overridden: boolean
   has_value?: boolean
   choices?: Array<{ value: string; label: string }>
   description?: string
+  /** list 类型的编辑器形态：skill=技能 / mcp=MCP 服务器 */
+  item?: 'skill' | 'mcp'
 }
 
 export interface SettingGroup {
@@ -42,7 +44,7 @@ export const configApi = {
   saveSetting: (key: string, value: string | number | boolean | null) =>
     apiClient.put('/config/settings', { key, value }),
   /** 批量保存设置项（设置页统一保存按钮）；value 为空字符串/null 表示重置回默认 */
-  saveSettings: (items: Array<{ key: string; value: string | number | boolean | null }>) =>
+  saveSettings: (items: Array<{ key: string; value: string | number | boolean | Array<Record<string, any>> | Record<string, any> | null }>) =>
     apiClient.put<{ status: string; saved: string[]; reset: string[]; pdf_engine?: string }>(
       '/config/settings/batch',
       { settings: items },

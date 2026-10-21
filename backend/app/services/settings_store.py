@@ -65,7 +65,147 @@ SETTING_GROUPS = {
             },
         ],
     },
+    "agent": {
+        "title": "Agent 设置",
+        "description": "论文问答 Agent 的行为：自定义指令、技能（Skills）、MCP 工具服务器",
+        "fields": [
+            {
+                "key": "agent.system_prompt",
+                "label": "自定义系统指令",
+                "type": "text",
+                "default": "",
+                "description": "追加到内置系统提示之后的自定义指令（如回答风格、语言、引用格式要求）。留空表示仅使用内置提示",
+            },
+            {
+                "key": "agent.max_turns",
+                "label": "最大工具调用轮数",
+                "type": "number",
+                "default": 25,
+                "description": "单次问答中 agent 自主调用工具的最大轮数（防止死循环消耗 token），范围 1-200",
+            },
+            {
+                "key": "agent.context_window",
+                "label": "模型上下文窗口",
+                "type": "number",
+                "default": 128000,
+                "description": "模型上下文窗口大小（tokens），用于对话页上下文用量条估算，范围 1000-2000000",
+            },
+            {
+                "key": "agent.skills",
+                "label": "技能（Skills）",
+                "type": "list",
+                "item": "skill",
+                "default": [],
+                "description": "可复用的提示词/知识片段。agent 遇到相关任务时可通过 use_skill 工具加载技能全文",
+            },
+            {
+                "key": "agent.mcp_servers",
+                "label": "MCP 服务器",
+                "type": "list",
+                "item": "mcp",
+                "default": [],
+                "description": "Model Context Protocol 工具服务器（stdio 本地进程或 HTTP 远程）。连接成功后其工具自动注册给 agent 调用",
+            },
+        ],
+    },
 }
+
+
+# ---------------------------------------------------------------------------
+# agent.* 结构化设置项校验
+# ---------------------------------------------------------------------------
+
+
+def _as_structured(value: Any, expect: type) -> Any:
+    """兼容旧数据：JSON 字符串自动解析为结构化值。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return [] if expect is list else {}
+        try:
+            value = json.loads(text)
+        except Exception:
+            raise ValueError("不是合法的 JSON")
+    if not isinstance(value, expect):
+        raise ValueError(f"需要 {expect.__name__} 类型")
+    return value
+
+
+def validate_setting_value(key: str, value: Any) -> Any:
+    """校验并规范化设置值（返回规范化后的值；非法时抛 ValueError）。"""
+    if value is None or (isinstance(value, str) and value == ""):
+        return None
+    if key == "agent.max_turns":
+        n = int(value)
+        if not 1 <= n <= 200:
+            raise ValueError("最大工具调用轮数需在 1-200 之间")
+        return n
+    if key == "agent.context_window":
+        n = int(value)
+        if not 1000 <= n <= 2_000_000:
+            raise ValueError("上下文窗口需在 1000-2000000 之间")
+        return n
+    if key == "agent.system_prompt":
+        return str(value)
+    if key == "agent.skills":
+        items = _as_structured(value, list)
+        names = set()
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"第 {i + 1} 个技能必须是对象")
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"第 {i + 1} 个技能缺少 name")
+            if name in names:
+                raise ValueError(f"技能名重复: {name}")
+            names.add(name)
+            if not str(item.get("content") or "").strip():
+                raise ValueError(f"技能 {name} 缺少 content")
+        return [
+            {
+                "name": str(item["name"]).strip(),
+                "description": str(item.get("description") or "").strip(),
+                "content": str(item.get("content") or ""),
+            }
+            for item in items
+        ]
+    if key == "agent.mcp_servers":
+        items = _as_structured(value, list)
+        names = set()
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"第 {i + 1} 个 MCP 服务器必须是对象")
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"第 {i + 1} 个 MCP 服务器缺少 name")
+            if name in names:
+                raise ValueError(f"MCP 服务器名重复: {name}")
+            names.add(name)
+            transport = str(item.get("transport") or "stdio")
+            if transport not in ("stdio", "http"):
+                raise ValueError(f"MCP 服务器 {name} 的 transport 仅支持 stdio/http")
+            if transport == "stdio" and not str(item.get("command") or "").strip():
+                raise ValueError(f"MCP 服务器 {name} 缺少 command")
+            if transport == "http" and not str(item.get("url") or "").strip():
+                raise ValueError(f"MCP 服务器 {name} 缺少 url")
+        return [
+            {
+                "name": str(item.get("name") or "").strip(),
+                "transport": str(item.get("transport") or "stdio"),
+                "command": str(item.get("command") or ""),
+                "args": [str(a) for a in (item.get("args") or []) if str(a).strip()],
+                "env": {str(k): str(v) for k, v in (item.get("env") or {}).items()}
+                if isinstance(item.get("env"), dict)
+                else {},
+                "url": str(item.get("url") or ""),
+                "headers": {str(k): str(v) for k, v in (item.get("headers") or {}).items()}
+                if isinstance(item.get("headers"), dict)
+                else {},
+                "enabled": bool(item.get("enabled", True)),
+            }
+            for item in items
+        ]
+    return value
 
 
 def _setting_key(group: str, field_key: str) -> str:

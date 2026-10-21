@@ -37,6 +37,8 @@ export function AssistantPanel({
     setMessages,
     addMessage,
     appendToLast,
+    appendThinking,
+    upsertTrace,
     updateMessage,
     setStreaming,
   } = useChatStore()
@@ -59,6 +61,8 @@ export function AssistantPanel({
             id: m.id,
             role: m.role,
             content: m.content,
+            thinking: m.meta?.thinking,
+            trace: m.meta?.tool_trace,
             sources: m.sources,
             meta: m.meta,
             createdAt: new Date(m.created_at || Date.now()).getTime(),
@@ -113,14 +117,21 @@ export function AssistantPanel({
           current_page: currentPage,
         },
         (type, data) => {
-          if (type === 'answer_delta') {
+          if (type === 'thinking_delta') {
+            appendThinking(answerId, String(data.content || ''))
+          } else if (type === 'event') {
+            upsertTrace(answerId, data)
+          } else if (type === 'answer_delta') {
             appendToLast(String(data.content || ''))
           } else if (type === 'result') {
             const answer = data.answer || {}
+            const summary = answer.trace_summary || {}
             updateMessage(answerId, {
               content: answer.content || '',
+              thinking: summary.thinking || undefined,
+              trace: summary.tool_trace || undefined,
               sources: answer.sources || [],
-              meta: answer.trace_summary || {},
+              meta: summary,
               streaming: false,
             })
           } else if (type === 'error') {
@@ -177,6 +188,33 @@ export function AssistantPanel({
                 <div className={styles.userBubble}>{msg.content}</div>
               ) : (
                 <div className={styles.assistantBubble}>
+                  {msg.trace && msg.trace.length > 0 && (
+                    <div className={styles.traceList}>
+                      {msg.trace.map((t) => (
+                        <div
+                          key={t.id}
+                          className={`${styles.traceItem} ${
+                            t.status === 'failed'
+                              ? styles.traceFailed
+                              : t.status === 'running'
+                                ? styles.traceRunning
+                                : ''
+                          }`}
+                        >
+                          <span>{t.status === 'running' ? '⏳' : t.status === 'failed' ? '✕' : '✓'}</span>
+                          <span className={styles.traceTitle}>{t.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {msg.thinking ? (
+                    <details className={styles.thinking} open={!!msg.streaming}>
+                      <summary className={styles.thinkingSummary}>
+                        🧠 思考过程（{msg.thinking.length.toLocaleString()} 字）
+                      </summary>
+                      <pre className={styles.thinkingBody}>{msg.thinking}</pre>
+                    </details>
+                  ) : null}
                   {msg.content ? (
                     <Markdown compact>{msg.content}</Markdown>
                   ) : msg.streaming ? (

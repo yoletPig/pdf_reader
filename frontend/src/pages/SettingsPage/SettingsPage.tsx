@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { configApi, SettingField, SettingGroup } from '../../api/config'
+import { agentRunsApi, type McpServerStatus } from '../../api/agent-runs'
 import { promptsApi } from '../../api/prompts'
 import { useConfigStore } from '../../stores/config-store'
 import styles from './SettingsPage.module.css'
 
-type TabId = 'pdf' | 'model' | 'prompts' | 'general'
+type TabId = 'pdf' | 'model' | 'agent' | 'prompts' | 'general'
 
 interface EditableField extends SettingField {
   dirty: boolean
@@ -20,6 +21,18 @@ export default function SettingsPage() {
   const [status, setStatus] = useState('')
   const [savingAll, setSavingAll] = useState(false)
   const [gatewayStatus, setGatewayStatus] = useState<string>('')
+  const [agentOverview, setAgentOverview] = useState<any>(null)
+  const [mcpTests, setMcpTests] = useState<Record<string, { loading: boolean; result?: McpServerStatus }>>({})
+
+  useEffect(() => {
+    if (activeTab === 'agent') {
+      agentRunsApi
+        .getStatus()
+        .then(res => setAgentOverview(res.data))
+        .catch(() => setAgentOverview(null))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
 
   useEffect(() => {
     refreshSettings()
@@ -47,7 +60,7 @@ export default function SettingsPage() {
     }
   }
 
-  const updateField = (key: string, value: string | number | boolean) => {
+  const updateField = (key: string, value: any) => {
     setFields(prev => ({
       ...prev,
       [key]: { ...prev[key], value, dirty: true, error: undefined },
@@ -143,6 +156,17 @@ export default function SettingsPage() {
           {...commonProps}
         />
       )
+    } else if (field.type === 'text') {
+      control = (
+        <textarea
+          value={String(field.value ?? '')}
+          onChange={e => updateField(field.key, e.target.value)}
+          rows={5}
+          {...commonProps}
+        />
+      )
+    } else if (field.type === 'list') {
+      return renderListField(field)
     } else {
       control = (
         <input
@@ -171,6 +195,232 @@ export default function SettingsPage() {
     )
   }
 
+  /* ---------- list 字段：技能 / MCP 服务器结构化编辑 ---------- */
+
+  const parseEnvLines = (text: string): Record<string, string> => {
+    const env: Record<string, string> = {}
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const eq = trimmed.indexOf('=')
+      if (eq <= 0) continue
+      env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1)
+    }
+    return env
+  }
+
+  const envToLines = (env: any) =>
+    Object.entries(env || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n')
+
+  const handleTestMcp = async (fieldKey: string, index: number, server: Record<string, any>) => {
+    const testKey = `${fieldKey}:${index}`
+    setMcpTests(prev => ({ ...prev, [testKey]: { loading: true } }))
+    try {
+      const res = await agentRunsApi.testMcpServer(server)
+      setMcpTests(prev => ({ ...prev, [testKey]: { loading: false, result: res.data } }))
+    } catch (error: any) {
+      setMcpTests(prev => ({
+        ...prev,
+        [testKey]: {
+          loading: false,
+          result: {
+            name: server.name,
+            transport: server.transport,
+            status: 'error',
+            tools: [],
+            error: error?.response?.data?.detail || error.message || '测试失败',
+          },
+        },
+      }))
+    }
+  }
+
+  const renderListField = (field: EditableField) => {
+    const items: any[] = Array.isArray(field.value) ? field.value : []
+    const setItems = (next: any[]) => updateField(field.key, next)
+    const updateItem = (index: number, patch: Record<string, any>) =>
+      setItems(items.map((item, i) => (i === index ? { ...item, ...patch } : item)))
+
+    return (
+      <div key={field.key} className={styles.field}>
+        <label className={styles.fieldLabel}>
+          <span>{field.label}</span>
+          {field.overridden ? <span className={styles.overriddenBadge}>已自定义</span> : null}
+          {field.dirty ? <span className={styles.dirtyBadge}>未保存</span> : null}
+        </label>
+        {field.description ? <p className={styles.fieldHint}>{field.description}</p> : null}
+
+        {items.length === 0 ? <p className={styles.fieldHint}>暂无条目</p> : null}
+
+        {items.map((item, index) =>
+          field.item === 'skill' ? (
+            <div key={index} className={styles.listCard}>
+              <div className={styles.listCardHeader}>
+                <input
+                  value={String(item.name ?? '')}
+                  placeholder="技能名（如 summarize_paper）"
+                  onChange={e => updateItem(index, { name: e.target.value })}
+                  disabled={savingAll}
+                />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setItems(items.filter((_, i) => i !== index))}
+                  disabled={savingAll}
+                >
+                  🗑 删除
+                </button>
+              </div>
+              <input
+                value={String(item.description ?? '')}
+                placeholder="描述（agent 据此判断何时使用）"
+                onChange={e => updateItem(index, { description: e.target.value })}
+                disabled={savingAll}
+              />
+              <textarea
+                value={String(item.content ?? '')}
+                placeholder="技能内容（提示词 / 知识片段 / 操作指引）"
+                rows={5}
+                onChange={e => updateItem(index, { content: e.target.value })}
+                disabled={savingAll}
+              />
+            </div>
+          ) : (
+            <div key={index} className={styles.listCard}>
+              <div className={styles.listCardHeader}>
+                <input
+                  value={String(item.name ?? '')}
+                  placeholder="服务器名（如 fetch）"
+                  onChange={e => updateItem(index, { name: e.target.value })}
+                  disabled={savingAll}
+                />
+                <select
+                  value={String(item.transport ?? 'stdio')}
+                  onChange={e => updateItem(index, { transport: e.target.value })}
+                  disabled={savingAll}
+                >
+                  <option value="stdio">本地进程 (stdio)</option>
+                  <option value="http">远程 (HTTP)</option>
+                </select>
+                <label className={styles.checkboxInline}>
+                  <input
+                    type="checkbox"
+                    checked={item.enabled !== false}
+                    onChange={e => updateItem(index, { enabled: e.target.checked })}
+                    disabled={savingAll}
+                  />
+                  启用
+                </label>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handleTestMcp(field.key, index, item)}
+                  disabled={savingAll || mcpTests[`${field.key}:${index}`]?.loading}
+                >
+                  {mcpTests[`${field.key}:${index}`]?.loading ? '测试中…' : '🔌 测试'}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setItems(items.filter((_, i) => i !== index))}
+                  disabled={savingAll}
+                >
+                  🗑 删除
+                </button>
+              </div>
+              {(item.transport ?? 'stdio') === 'stdio' ? (
+                <>
+                  <input
+                    value={String(item.command ?? '')}
+                    placeholder="启动命令，如 npx / uvx / node"
+                    onChange={e => updateItem(index, { command: e.target.value })}
+                    disabled={savingAll}
+                  />
+                  <input
+                    value={Array.isArray(item.args) ? item.args.join(' ') : String(item.args ?? '')}
+                    placeholder="参数（空格分隔），如 -y @modelcontextprotocol/server-filesystem /path"
+                    onChange={e =>
+                      updateItem(index, {
+                        args: e.target.value.split(/\s+/).filter(Boolean),
+                      })
+                    }
+                    disabled={savingAll}
+                  />
+                  <textarea
+                    value={envToLines(item.env)}
+                    placeholder={'环境变量（每行 KEY=value），如\nAPI_KEY=sk-xxx'}
+                    rows={2}
+                    onChange={e => updateItem(index, { env: parseEnvLines(e.target.value) })}
+                    disabled={savingAll}
+                  />
+                </>
+              ) : (
+                <>
+                  <input
+                    value={String(item.url ?? '')}
+                    placeholder="Streamable HTTP 端点，如 https://example.com/mcp"
+                    onChange={e => updateItem(index, { url: e.target.value })}
+                    disabled={savingAll}
+                  />
+                  <textarea
+                    value={envToLines(item.headers)}
+                    placeholder={'请求头（每行 KEY=value），如\nAuthorization=Bearer xxx'}
+                    rows={2}
+                    onChange={e => updateItem(index, { headers: parseEnvLines(e.target.value) })}
+                    disabled={savingAll}
+                  />
+                </>
+              )}
+              {mcpTests[`${field.key}:${index}`]?.result ? (
+                <p
+                  className={`${styles.testResult} ${
+                    mcpTests[`${field.key}:${index}`].result?.status === 'connected'
+                      ? styles.testOk
+                      : styles.testErr
+                  }`}
+                >
+                  {mcpTests[`${field.key}:${index}`].result?.status === 'connected'
+                    ? `✅ 连接成功，发现 ${mcpTests[`${field.key}:${index}`].result?.tools?.length ?? 0} 个工具${
+                        mcpTests[`${field.key}:${index}`].result?.tools?.length
+                          ? `：${mcpTests[`${field.key}:${index}`].result?.tools.join(', ')}`
+                          : ''
+                      }`
+                    : `❌ 连接失败：${mcpTests[`${field.key}:${index}`].result?.error || '未知错误'}`}
+                </p>
+              ) : null}
+            </div>
+          ),
+        )}
+
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={() =>
+            setItems(
+              field.item === 'skill'
+                ? [...items, { name: '', description: '', content: '' }]
+                : [
+                    ...items,
+                    {
+                      name: '',
+                      transport: 'stdio',
+                      command: '',
+                      args: [],
+                      env: {},
+                      url: '',
+                      headers: {},
+                      enabled: true,
+                    },
+                  ],
+            )
+          }
+          disabled={savingAll}
+        >
+          + {field.item === 'skill' ? '添加技能' : '添加 MCP 服务器'}
+        </button>
+        {field.error ? <p className={styles.fieldError}>{field.error}</p> : null}
+      </div>
+    )
+  }
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
@@ -182,12 +432,13 @@ export default function SettingsPage() {
         <nav className={styles.tabs}>
           <button className={`${styles.tab} ${activeTab === 'pdf' ? styles.active : ''}`} onClick={() => setActiveTab('pdf')}>📄 PDF 识别</button>
           <button className={`${styles.tab} ${activeTab === 'model' ? styles.active : ''}`} onClick={() => setActiveTab('model')}>🤖 模型配置</button>
+          <button className={`${styles.tab} ${activeTab === 'agent' ? styles.active : ''}`} onClick={() => setActiveTab('agent')}>🧠 Agent 设置</button>
           <button className={`${styles.tab} ${activeTab === 'prompts' ? styles.active : ''}`} onClick={() => setActiveTab('prompts')}>📝 Prompt 模板</button>
           <button className={`${styles.tab} ${activeTab === 'general' ? styles.active : ''}`} onClick={() => setActiveTab('general')}>🎨 通用设置</button>
         </nav>
 
         <main className={styles.content}>
-          {(activeTab === 'pdf' || activeTab === 'model') && (
+          {(activeTab === 'pdf' || activeTab === 'model' || activeTab === 'agent') && (
             <div className={styles.saveBar}>
               <span className={dirtyCount ? `${styles.saveInfo} ${styles.saveInfoDirty}` : styles.saveInfo}>
                 {dirtyCount ? `有 ${dirtyCount} 项未保存的修改` : '所有修改已保存'}
@@ -204,12 +455,61 @@ export default function SettingsPage() {
           )}
           {status ? <div className={styles.statusBar}>{status}</div> : null}
 
-          {(activeTab === 'pdf' || activeTab === 'model') && groups[activeTab] && (
+          {(activeTab === 'pdf' || activeTab === 'model' || activeTab === 'agent') && groups[activeTab] && (
             <section>
               <h2>{groups[activeTab].title}</h2>
               <p className={styles.groupDescription}>{groups[activeTab].description}</p>
               <div className={styles.formCard}>
                 {groups[activeTab].fields.map(f => renderField(fields[f.key] || f))}
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'agent' && (
+            <section>
+              <div className={styles.formCard}>
+                <h3>Agent 运行状态</h3>
+                {agentOverview && agentOverview.status === 'ok' ? (
+                  <>
+                    <p className={styles.fieldHint}>
+                      模型：{agentOverview.model || '未配置'} · 活跃会话：{agentOverview.active_sessions ?? 0} ·
+                      技能：{agentOverview.skills?.length || 0} 个 · MCP 服务器：{agentOverview.mcp?.length || 0} 个
+                    </p>
+                    <div className={styles.mcpStatusList}>
+                      {(agentOverview.mcp || []).map((s: McpServerStatus) => (
+                        <div key={s.name} className={styles.mcpStatusItem}>
+                          <span
+                            className={`${styles.mcpDot} ${
+                              s.status === 'connected'
+                                ? styles.mcpOk
+                                : s.status === 'disabled'
+                                  ? styles.mcpOff
+                                  : styles.mcpErr
+                            }`}
+                          />
+                          <strong>{s.name}</strong>
+                          <span>
+                            {s.status === 'connected'
+                              ? `已连接（${s.tools?.length ?? 0} 个工具）`
+                              : s.status === 'disabled'
+                                ? '已禁用'
+                                : s.status === 'connecting'
+                                  ? '连接中…'
+                                  : `连接失败：${s.error || '未知错误'}`}
+                          </span>
+                        </div>
+                      ))}
+                      {(agentOverview.mcp || []).length === 0 ? (
+                        <p className={styles.fieldHint}>未配置 MCP 服务器</p>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <p className={styles.fieldHint}>agent 服务不可用（{gatewayStatus || '未启动'}），配置仍可保存。</p>
+                )}
+                <p className={styles.fieldHint}>
+                  提示：修改 Agent 配置后下一次提问即生效；进行中的对话保留历史，系统提示与工具按新配置重建。
+                </p>
               </div>
             </section>
           )}

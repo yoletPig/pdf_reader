@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -225,6 +225,16 @@ def _parse_sse_frame(frame: str):
         return event, json.loads("\n".join(data_lines))
     except Exception:
         return None
+
+
+@router.delete("/sessions/{session_id}/messages")
+async def clear_messages(session_id: str, db: AsyncSession = Depends(get_db)):
+    """清空会话的全部对话历史（重置上下文）。"""
+    session = await _load_session_or_404(db, session_id)
+    result = await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
+    session.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"status": "ok", "deleted": result.rowcount or 0}
 
 
 @router.post("/sessions/{session_id}/stream")

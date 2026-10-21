@@ -34,6 +34,84 @@ export interface CreatePaperQARunRequest {
   }
 }
 
+export interface TraceSummary {
+  event_count?: number
+  tool_calls?: number
+  llm_calls?: number
+  tools_used?: string[]
+  stop_reason?: string
+  error_message?: string
+  token_usage?: { input?: number; output?: number; total_tokens?: number }
+  /** 模型思考过程（reasoning/thinking 块全文，可能截断） */
+  thinking?: string
+  /** 工具调用轨迹 */
+  tool_trace?: ThoughtStep[]
+  /** 本次问答耗时（毫秒） */
+  duration_ms?: number
+  /** 结束时的上下文用量 */
+  context?: {
+    tokens?: number
+    estimated_tokens?: number
+    window?: number
+    percent?: number
+    messages?: number
+  }
+}
+
+/** SSE 状态帧：agent 状态 / 上下文用量实时更新 */
+export interface AgentStatusFrame {
+  run_id: string
+  phase: string
+  state: 'idle' | 'thinking' | 'tool_calling' | 'streaming'
+  context: {
+    tokens: number
+    estimated_tokens: number
+    window: number
+    percent: number
+    messages: number
+  }
+  usage: { input: number; output: number; total: number }
+  tool_calls: number
+  llm_calls: number
+  elapsed_ms: number
+}
+
+export interface McpServerStatus {
+  name: string
+  transport: 'stdio' | 'http'
+  status: 'connected' | 'connecting' | 'error' | 'disabled'
+  tools: string[]
+  error?: string
+}
+
+export interface AgentSessionStatus {
+  session_id: string
+  exists: boolean
+  state: string
+  is_streaming: boolean
+  message_count: number
+  context_chars: number
+  estimated_tokens: number
+  context_tokens: number
+  context_window: number
+  context_percent: number
+  usage: { input: number; output: number; total: number }
+  pending_tool_calls: string[]
+  tool_count: number
+  model: string
+  max_turns: number
+  last_error?: string
+}
+
+export interface AgentOverview {
+  status: string
+  model: string
+  active_sessions: number
+  skills: string[]
+  mcp: McpServerStatus[]
+  sessions: AgentSessionStatus[]
+}
+
 export interface StreamAgentRunResult {
   run_id: string
   agent: string
@@ -46,20 +124,16 @@ export interface StreamAgentRunResult {
       page: number
       chunk_text?: string
     }>
-    trace_summary: {
-      event_count?: number
-      tool_calls?: number
-      llm_calls?: number
-      tools_used?: string[]
-      token_usage?: { input?: number; output?: number; total_tokens?: number }
-    }
+    trace_summary: TraceSummary
   }
   execution: ExecutionMetadata
 }
 
 export type AgentRunStreamItem =
-  | { type: 'run_created'; data: { run_id: string; agent: string; status: string; execution: ExecutionMetadata; thought?: ThoughtStep | null } }
+  | { type: 'run_created'; data: { run_id: string; agent: string; status: string; execution: ExecutionMetadata; thought?: ThoughtStep | null; agent_info?: { model: string; max_turns: number; skills: Array<{ name: string; description: string }>; mcp: McpServerStatus[]; tools: string[] } } }
   | { type: 'event'; data: ThoughtStep }
+  | { type: 'thinking_delta'; data: { content: string } }
+  | { type: 'status'; data: AgentStatusFrame }
   | { type: 'answer_delta'; data: { content: string } }
   | { type: 'result'; data: StreamAgentRunResult }
   | { type: 'error'; data: { run_id: string; detail: string; error_type?: string } }
@@ -123,4 +197,14 @@ export const agentRunsApi = {
     apiClient.post('/agent-runs/reset', { session_id: sessionId }),
   /** agent-gateway 健康状态 */
   health: () => apiClient.get('/agent-runs/health'),
+  /** agent 状态/上下文用量（session_id 可选） */
+  getStatus: (sessionId?: string) =>
+    apiClient.get<AgentSessionStatus | AgentOverview>('/agent-runs/status', {
+      params: sessionId ? { session_id: sessionId } : undefined,
+    }),
+  /** 活跃会话状态列表 */
+  listSessions: () => apiClient.get<{ sessions: AgentSessionStatus[] }>('/agent-runs/sessions'),
+  /** 测试 MCP 服务器连接 */
+  testMcpServer: (server: Record<string, any>) =>
+    apiClient.post<McpServerStatus>('/agent-runs/mcp-test', { server }),
 }

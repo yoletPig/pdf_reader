@@ -41,6 +41,8 @@ export const chatApi = {
   updateSession: (id: string, data: { title?: string; paper_id?: string }) =>
     apiClient.patch<ChatSessionItem>(`/chat/sessions/${id}`, data),
   deleteSession: (id: string) => apiClient.delete(`/chat/sessions/${id}`),
+  /** 清空会话对话历史（重置上下文） */
+  clearMessages: (id: string) => apiClient.delete(`/chat/sessions/${id}/messages`),
   listMessages: (id: string) =>
     apiClient.get<{ session_id: string; messages: ChatMessageItem[] }>(`/chat/sessions/${id}/messages`),
   /** 非流式问答（返回最终结果） */

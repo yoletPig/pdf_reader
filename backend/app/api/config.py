@@ -51,8 +51,18 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
 
 class SaveSettingRequest(BaseModel):
-    key: str  # 完整 key，如 "llm.model" / "pdf.pdf_engine"
-    value: str | int | float | None
+    key: str  # 完整 key，如 "llm.model" / "pdf.pdf_engine" / "agent.skills"
+    value: str | int | float | bool | list | dict | None
+
+
+def _validate_value(key: str, value):
+    """校验设置值（agent.* 结构化字段），失败抛 HTTP 400。"""
+    if key.startswith("agent."):
+        try:
+            return settings_store.validate_setting_value(key, value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"{key}: {exc}")
+    return value
 
 
 @router.put("/settings")
@@ -74,16 +84,26 @@ async def save_setting(data: SaveSettingRequest, db: AsyncSession = Depends(get_
                 detail=f"pdf_engine 仅支持: {', '.join(settings_store.PDF_ENGINE_CHOICES)}",
             )
 
-    if data.value is None or (isinstance(data.value, str) and data.value == ""):
+    value = _validate_value(data.key, data.value)
+    if value is None:
         await settings_store.delete_override(db, data.key)
         action = "reset"
     else:
-        await settings_store.save_override(db, data.key, data.value)
+        await settings_store.save_override(db, data.key, value)
         action = "saved"
 
     if data.key == "pdf.pdf_engine":
         engine = await settings_store.refresh_pdf_engine_cache(db)
         return {"status": "ok", "action": action, "pdf_engine": engine}
+
+    if data.key.startswith("agent."):
+        # agent 配置由 gateway 消费，通知其重建缓存
+        try:
+            from app.api.agent_proxy import _invalidate_gateway_config
+            await _invalidate_gateway_config()
+        except Exception:
+            pass
+        return {"status": "ok", "action": action}
 
     if data.key.startswith("llm."):
         cfg = await _effective_llm_config(db)
@@ -113,6 +133,7 @@ async def save_settings_batch(data: SaveSettingsBatchRequest, db: AsyncSession =
         for field in group["fields"]
     }
     # 先整体校验，避免部分写入后失败
+    normalized: list = []
     for item in data.settings:
         if item.key not in valid_keys:
             raise HTTPException(status_code=400, detail=f"未知设置项: {item.key}")
@@ -123,12 +144,16 @@ async def save_settings_batch(data: SaveSettingsBatchRequest, db: AsyncSession =
                     status_code=400,
                     detail=f"pdf_engine 仅支持: {', '.join(settings_store.PDF_ENGINE_CHOICES)}",
                 )
+        normalized.append(
+            SaveSettingRequest(key=item.key, value=_validate_value(item.key, item.value))
+        )
 
     saved: list = []
     reset: list = []
     llm_changed = False
     pdf_changed = False
-    for item in data.settings:
+    agent_changed = False
+    for item in normalized:
         if item.value is None or (isinstance(item.value, str) and item.value == ""):
             await settings_store.delete_override(db, item.key)
             reset.append(item.key)
@@ -139,6 +164,8 @@ async def save_settings_batch(data: SaveSettingsBatchRequest, db: AsyncSession =
             llm_changed = True
         elif item.key == "pdf.pdf_engine":
             pdf_changed = True
+        elif item.key.startswith("agent."):
+            agent_changed = True
 
     result = {"status": "ok", "saved": saved, "reset": reset}
     if pdf_changed:
@@ -149,6 +176,13 @@ async def save_settings_batch(data: SaveSettingsBatchRequest, db: AsyncSession =
         from app.services.llm import llm_router
         await llm_router.apply_config(cfg)
         # 通知 agent-gateway 重新拉取模型配置
+        try:
+            from app.api.agent_proxy import _invalidate_gateway_config
+            await _invalidate_gateway_config()
+        except Exception:
+            pass
+    elif agent_changed:
+        # agent 配置由 gateway 消费，通知其重建缓存
         try:
             from app.api.agent_proxy import _invalidate_gateway_config
             await _invalidate_gateway_config()
@@ -202,6 +236,31 @@ async def get_model_config_internal(request: Request, db: AsyncSession = Depends
         "model": str(_effective("model", settings.LLM_MODEL) or ""),
         "max_tokens": int(_effective("max_tokens", settings.LLM_MAX_TOKENS) or 4096),
         "temperature": float(_effective("temperature", settings.LLM_TEMPERATURE) or 0.3),
+    }
+
+
+@router.get("/agent-internal")
+async def get_agent_config_internal(request: Request, db: AsyncSession = Depends(get_db)):
+    """返回完整 agent 配置（自定义指令/技能/MCP 服务器）。
+
+    仅允许本机访问：供本机运行的 agent-gateway (pi agent) 拉取。
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(status_code=403, detail="仅限本机访问")
+
+    overrides = await _load_overrides(db)
+
+    def _effective(key: str, default):
+        value = overrides.get(key, default)
+        return settings_store.validate_setting_value(key, value) if value is not None else default
+
+    return {
+        "system_prompt": str(_effective("agent.system_prompt", "") or ""),
+        "max_turns": int(_effective("agent.max_turns", 25) or 25),
+        "context_window": int(_effective("agent.context_window", 128000) or 128000),
+        "skills": _effective("agent.skills", []) or [],
+        "mcp_servers": _effective("agent.mcp_servers", []) or [],
     }
 
 

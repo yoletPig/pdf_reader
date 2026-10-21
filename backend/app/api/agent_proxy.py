@@ -94,3 +94,35 @@ async def agent_gateway_health():
             return upstream.json()
     except Exception as exc:
         return {"status": "unreachable", "detail": str(exc)[:200]}
+
+
+@router.get("/status")
+async def agent_status(session_id: str = ""):
+    """透传 agent 状态 / 上下文用量（session_id 可选）。"""
+    try:
+        async with _client() as client:
+            upstream = await client.get(
+                "/api/agent-runs/status",
+                params={"session_id": session_id} if session_id else None,
+            )
+            return upstream.json()
+    except Exception as exc:
+        return {"status": "unreachable", "detail": str(exc)[:200]}
+
+
+@router.get("/sessions")
+async def agent_sessions():
+    """透传活跃会话状态列表。"""
+    try:
+        async with _client() as client:
+            upstream = await client.get("/api/agent-runs/sessions")
+            return upstream.json()
+    except Exception as exc:
+        return {"status": "unreachable", "detail": str(exc)[:200]}
+
+
+@router.post("/mcp-test")
+async def agent_mcp_test(request: Request):
+    """透传 MCP 服务器连接测试（设置页用）。"""
+    body = await request.json()
+    return await _forward_json("POST", "/api/agent-runs/mcp-test", body)

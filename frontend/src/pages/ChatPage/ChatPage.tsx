@@ -6,6 +6,11 @@ import {
   type ChatMessageItem,
   type ChatSessionItem,
 } from '../../api/chat'
+import {
+  agentRunsApi,
+  type AgentStatusFrame,
+  type ThoughtStep,
+} from '../../api/agent-runs'
 import { papersApi, type Paper } from '../../api/papers'
 import { useChatStore, type ChatMessage } from '../../stores/chat-store'
 import { Markdown } from '../../components/ui/Markdown'
@@ -19,11 +24,29 @@ const SUGGESTIONS = [
   '帮我列出某篇论文的核心贡献',
 ]
 
+/** 头部状态栏视图模型（SSE status 帧与 REST 状态接口归一化） */
+interface StatusView {
+  state: string
+  tokens: number
+  window: number
+  percent: number
+  messages: number
+}
+
+const STATE_LABELS: Record<string, string> = {
+  idle: '空闲',
+  thinking: '思考中',
+  tool_calling: '调用工具',
+  streaming: '生成中',
+}
+
 function toStoreMessage(item: ChatMessageItem): ChatMessage {
   return {
     id: item.id,
     role: item.role,
     content: item.content,
+    thinking: item.meta?.thinking,
+    trace: item.meta?.tool_trace,
     sources: item.sources,
     meta: item.meta,
     createdAt: new Date(item.created_at || Date.now()).getTime(),
@@ -53,6 +76,8 @@ export default function ChatPage() {
     setMessages,
     addMessage,
     appendToLast,
+    appendThinking,
+    upsertTrace,
     updateMessage,
     setStreaming,
     clear,
@@ -66,12 +91,53 @@ export default function ChatPage() {
   const [renameDraft, setRenameDraft] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [statusView, setStatusView] = useState<StatusView | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) || null,
     [sessions, activeSessionId],
+  )
+
+  /** 刷新上下文用量状态（优先 gateway 实时状态，冷启动时用历史 meta 回退） */
+  const refreshStatus = useCallback(
+    async (sessionId: string | null, fallbackMessages?: ChatMessage[]) => {
+      if (!sessionId) {
+        setStatusView(null)
+        return
+      }
+      try {
+        const res = await agentRunsApi.getStatus(`chat-${sessionId}`)
+        const data = res.data as any
+        if (data?.exists) {
+          setStatusView({
+            state: data.is_streaming ? data.state : 'idle',
+            tokens: data.context_tokens || 0,
+            window: data.context_window || 0,
+            percent: data.context_percent || 0,
+            messages: data.message_count || 0,
+          })
+          return
+        }
+      } catch {
+        /* 静默回退 */
+      }
+      const msgs = fallbackMessages || []
+      const lastMeta = [...msgs].reverse().find((m) => m.meta?.context)?.meta
+      if (lastMeta?.context) {
+        setStatusView({
+          state: 'idle',
+          tokens: lastMeta.context.tokens || 0,
+          window: lastMeta.context.window || 0,
+          percent: lastMeta.context.percent || 0,
+          messages: lastMeta.context.messages || 0,
+        })
+      } else {
+        setStatusView(null)
+      }
+    },
+    [],
   )
 
   /* ---------- 数据加载 ---------- */
@@ -93,7 +159,9 @@ export default function ChatPage() {
     setLoadingHistory(true)
     try {
       const res = await chatApi.listMessages(session.id)
-      setMessages((res.data.messages || []).map(toStoreMessage))
+      const mapped = (res.data.messages || []).map(toStoreMessage)
+      setMessages(mapped)
+      refreshStatus(session.id, mapped)
     } catch {
       setMessages([])
       toast.error('加载对话历史失败')
@@ -226,16 +294,41 @@ export default function ChatPage() {
         sessionId,
         { question, paper_id: scopePaperId || undefined },
         (type, data) => {
-          if (type === 'answer_delta') {
+          if (type === 'thinking_delta') {
+            appendThinking(answerId, String(data.content || ''))
+          } else if (type === 'event') {
+            upsertTrace(answerId, data as ThoughtStep)
+          } else if (type === 'status') {
+            const s = data as AgentStatusFrame
+            setStatusView({
+              state: s.state,
+              tokens: s.context?.tokens || 0,
+              window: s.context?.window || 0,
+              percent: s.context?.percent || 0,
+              messages: s.context?.messages || 0,
+            })
+          } else if (type === 'answer_delta') {
             appendToLast(String(data.content || ''))
           } else if (type === 'result') {
             const answer = data.answer || {}
+            const summary = answer.trace_summary || {}
             updateMessage(answerId, {
               content: answer.content || '',
+              thinking: summary.thinking || undefined,
+              trace: summary.tool_trace || undefined,
               sources: answer.sources || [],
-              meta: answer.trace_summary || {},
+              meta: summary,
               streaming: false,
             })
+            if (summary.context) {
+              setStatusView({
+                state: 'idle',
+                tokens: summary.context.tokens || 0,
+                window: summary.context.window || 0,
+                percent: summary.context.percent || 0,
+                messages: summary.context.messages || 0,
+              })
+            }
           } else if (type === 'error') {
             updateMessage(answerId, {
               content: `⚠️ ${data.detail || '出错了，请稍后重试。'}`,
@@ -262,6 +355,19 @@ export default function ChatPage() {
   }
 
   /* ---------- 渲染 ---------- */
+
+  const handleClearContext = async () => {
+    if (!activeSessionId || isStreaming) return
+    try {
+      await chatApi.clearMessages(activeSessionId)
+      await agentRunsApi.resetSession(`chat-${activeSessionId}`).catch(() => {})
+      setMessages([])
+      setStatusView(null)
+      toast.success('已清空上下文与对话历史')
+    } catch {
+      toast.error('清空失败')
+    }
+  }
 
   return (
     <div className={styles.container}>
@@ -339,6 +445,33 @@ export default function ChatPage() {
       <main className={styles.main}>
         <header className={styles.header}>
           <div className={styles.headerTitle}>{activeSession?.title || '新对话'}</div>
+          <div className={styles.statusArea}>
+            {statusView ? (
+              <>
+                <span className={`${styles.statusPill} ${isStreaming ? styles.statusActive : ''}`}>
+                  <span className={styles.statusDot} />
+                  {STATE_LABELS[statusView.state] || statusView.state}
+                </span>
+                <div
+                  className={styles.contextBarWrap}
+                  title={`上下文用量：约 ${statusView.tokens.toLocaleString()} / ${statusView.window.toLocaleString()} tokens（${statusView.percent}%）· ${statusView.messages} 条消息`}
+                >
+                  <div className={styles.contextBar}>
+                    <div
+                      className={`${styles.contextFill} ${statusView.percent > 80 ? styles.contextHigh : ''}`}
+                      style={{ width: `${Math.max(2, statusView.percent)}%` }}
+                    />
+                  </div>
+                  <span className={styles.contextLabel}>
+                    {statusView.tokens >= 1000
+                      ? `${(statusView.tokens / 1000).toFixed(1)}k`
+                      : statusView.tokens}
+                    /{statusView.window >= 1000 ? `${Math.round(statusView.window / 1000)}k` : statusView.window}
+                  </span>
+                </div>
+              </>
+            ) : null}
+          </div>
           <div className={styles.headerActions}>
             <select
               className={`select ${styles.scopeSelect}`}
@@ -351,6 +484,15 @@ export default function ChatPage() {
                 <option key={p.id} value={p.id}>{p.title}</option>
               ))}
             </select>
+            {activeSessionId && !isStreaming && messages.length > 0 ? (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={handleClearContext}
+                title="清空当前对话的上下文与历史"
+              >
+                清空上下文
+              </button>
+            ) : null}
             {isStreaming && (
               <button className="btn btn-secondary btn-sm" onClick={() => abortRef.current?.abort()}>
                 停止生成
@@ -387,14 +529,48 @@ export default function ChatPage() {
                     <div className={styles.userText}>{msg.content}</div>
                   ) : (
                     <>
+                      {msg.trace && msg.trace.length > 0 && (
+                        <div className={styles.traceList}>
+                          {msg.trace.map((t) => (
+                            <div
+                              key={t.id}
+                              className={`${styles.traceItem} ${
+                                t.status === 'failed'
+                                  ? styles.traceFailed
+                                  : t.status === 'running'
+                                    ? styles.traceRunning
+                                    : ''
+                              }`}
+                            >
+                              <span className={styles.traceIcon}>
+                                {t.status === 'running' ? '⏳' : t.status === 'failed' ? '✕' : '✓'}
+                              </span>
+                              <span className={styles.traceTitle}>{t.title}</span>
+                              {t.content ? <span className={styles.traceContent}>{t.content}</span> : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {msg.thinking ? (
+                        <details className={styles.thinking} open={!!msg.streaming}>
+                          <summary className={styles.thinkingSummary}>
+                            🧠 思考过程（{msg.thinking.length.toLocaleString()} 字{msg.streaming ? '，生成中' : ''}）
+                          </summary>
+                          <pre className={styles.thinkingBody}>{msg.thinking}</pre>
+                        </details>
+                      ) : null}
                       {msg.content ? (
                         <Markdown compact>{msg.content}</Markdown>
                       ) : msg.streaming ? (
-                        <div className={styles.typing}>
-                          <span className={styles.dot} />
-                          <span className={styles.dot} />
-                          <span className={styles.dot} />
-                        </div>
+                        msg.thinking ? (
+                          <div className={styles.thinkingIndicator}>模型思考中…</div>
+                        ) : (
+                          <div className={styles.typing}>
+                            <span className={styles.dot} />
+                            <span className={styles.dot} />
+                            <span className={styles.dot} />
+                          </div>
+                        )
                       ) : null}
                       {msg.sources && msg.sources.length > 0 && (
                         <div className={styles.sources}>
@@ -410,11 +586,13 @@ export default function ChatPage() {
                           ))}
                         </div>
                       )}
-                      {msg.meta && !msg.meta.error && (msg.meta.tool_calls || msg.meta.llm_calls) ? (
+                      {msg.meta && !msg.meta.error && (msg.meta.tool_calls || msg.meta.llm_calls || msg.meta.duration_ms) ? (
                         <div className={styles.trace}>
                           {msg.meta.tools_used?.length ? <span>🔧 {msg.meta.tools_used.join(', ')}</span> : null}
                           {msg.meta.llm_calls ? <span>⚡ {msg.meta.llm_calls} 次推理</span> : null}
                           {msg.meta.token_usage?.total_tokens ? <span>🎯 {msg.meta.token_usage.total_tokens} tokens</span> : null}
+                          {msg.meta.duration_ms ? <span>⏱ {(msg.meta.duration_ms / 1000).toFixed(1)}s</span> : null}
+                          {msg.meta.context?.percent != null ? <span>📚 上下文 {msg.meta.context.percent}%</span> : null}
                         </div>
                       ) : null}
                     </>

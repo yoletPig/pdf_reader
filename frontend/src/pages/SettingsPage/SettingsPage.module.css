@@ -294,3 +294,102 @@
   background: #fef3c7;
   color: #b45309;
 }
+
+/* ---- 技能 / MCP 服务器列表编辑器 ---- */
+.listCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.listCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.listCardHeader input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.listCard input,
+.listCard select,
+.listCard textarea {
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.listCard textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.checkboxInline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.testResult {
+  font-size: 12px;
+  margin: 0;
+}
+
+.testOk {
+  color: #059669;
+}
+
+.testErr {
+  color: #e53e3e;
+}
+
+/* ---- Agent 运行状态 ---- */
+.mcpStatusList {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.mcpStatusItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.mcpDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mcpOk {
+  background: #059669;
+}
+
+.mcpErr {
+  background: #e53e3e;
+}
+
+.mcpOff {
+  background: var(--color-text-tertiary);
+}
