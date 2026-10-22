@@ -5,6 +5,8 @@ from app.models.paper_block import PaperBlock
 from app.models.app_setting import AppSetting
 from app.models.chat import ChatSession, ChatMessage
 from app.models.folder import Folder
+from app.models.todo import Todo
+from app.models.note import Note
 
 __all__ = [
     "Paper",
@@ -14,4 +16,6 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Folder",
+    "Todo",
+    "Note",
 ]

@@ -1,0 +1,311 @@
+.container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 0;
+  flex: 1;
+}
+
+.headerStats {
+  display: flex;
+  gap: 12px;
+}
+
+.stat {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+}
+
+.main {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 22px 20px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ---------- 快速添加 ---------- */
+
+.addBar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.addInput {
+  flex: 1;
+}
+
+.addPriority {
+  width: 110px;
+}
+
+.addDate {
+  width: 150px;
+}
+
+/* ---------- 过滤 ---------- */
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.searchInput {
+  max-width: 220px;
+}
+
+/* ---------- 分组列表 ---------- */
+
+.bucket {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bucketLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.bucketOverdue {
+  color: var(--color-danger);
+}
+
+.bucketCount {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-full);
+  padding: 1px 8px;
+}
+
+.todoList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.todoItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.todoItem:hover {
+  border-color: var(--color-border-hover);
+}
+
+.todoDone .todoTitle {
+  text-decoration: line-through;
+  color: var(--color-text-tertiary);
+}
+
+.checkbox {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  border: 2px solid var(--color-border-hover);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-success);
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.checkbox:hover {
+  border-color: var(--color-primary);
+}
+
+.todoDone .checkbox {
+  border-color: var(--color-success);
+  background: var(--color-success-light);
+}
+
+.todoMain {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.todoTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+.todoDesc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.priority {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+}
+
+.priority_high {
+  color: var(--color-danger);
+  background: var(--color-danger-light);
+}
+
+.priority_medium {
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+}
+
+.priority_low {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+}
+
+.dueChip {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+}
+
+.dueOverdue {
+  color: var(--color-danger);
+  background: var(--color-danger-light);
+  font-weight: 600;
+}
+
+.todoActions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.todoItem:hover .todoActions {
+  opacity: 1;
+}
+
+.actionBtn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.actionBtn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.actionDanger:hover {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+
+/* ---------- 空状态 ---------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 0;
+  color: var(--color-text-tertiary);
+  font-size: 13.5px;
+}
+
+.emptyIcon {
+  font-size: 36px;
+}
+
+.emptySmall {
+  padding: 12px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+  font-size: 12.5px;
+}
+
+/* ---------- 表单 ---------- */
+
+.formGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex: 1;
+}
+
+.formRow {
+  display: flex;
+  gap: 12px;
+}
+
+.formLabel {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.formTextarea {
+  resize: vertical;
+  font-family: inherit;
+}

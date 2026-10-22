@@ -12,6 +12,7 @@ import {
   type ThoughtStep,
 } from '../../api/agent-runs'
 import { papersApi, type Paper } from '../../api/papers'
+import { notesApi } from '../../api/notes'
 import { useChatStore, type ChatMessage } from '../../stores/chat-store'
 import { Markdown } from '../../components/ui/Markdown'
 import { ConfirmDialog, useToast } from '../../components/ui/kit'
@@ -383,6 +384,74 @@ export default function ChatPage() {
     }
   }
 
+  /* ---------- 保存为笔记 ---------- */
+
+  /** 将单条消息保存为笔记 */
+  const handleSaveMessageAsNote = async (msg: ChatMessage) => {
+    if (!msg.content.trim()) return
+    try {
+      const res = await notesApi.create({
+        title: deriveTitle(msg.content),
+        content_md: msg.content,
+        source_type: 'chat',
+        source_ref: {
+          session_id: activeSessionId || '',
+          message_id: msg.id,
+          session_title: activeSession?.title || '',
+        },
+      })
+      toast.success('已保存为笔记')
+      navigate(`/notes?id=${res.data.id}`)
+    } catch {
+      toast.error('保存笔记失败')
+    }
+  }
+
+  /** 将整个会话导出为笔记 */
+  const handleExportSessionAsNote = async () => {
+    if (!messages.length || isStreaming) return
+    const sessionTitle = activeSession?.title || '对话笔记'
+    const lines: string[] = [
+      `# ${sessionTitle}`,
+      '',
+      `> 📅 ${new Date().toLocaleDateString('zh-CN')} · 来自 AI 对话`,
+      '',
+    ]
+    for (const m of messages) {
+      const content = m.content.trim()
+      if (!content) continue
+      if (m.role === 'user') {
+        lines.push('## 🧑 提问', '', content, '')
+      } else {
+        lines.push('## ✦ 回答', '', content, '')
+      }
+    }
+    try {
+      const res = await notesApi.create({
+        title: sessionTitle,
+        content_md: lines.join('\n'),
+        source_type: 'chat',
+        source_ref: {
+          session_id: activeSessionId || '',
+          session_title: sessionTitle,
+        },
+      })
+      toast.success('已导出为笔记')
+      navigate(`/notes?id=${res.data.id}`)
+    } catch {
+      toast.error('导出笔记失败')
+    }
+  }
+
+  const handleCopyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('已复制')
+    } catch {
+      toast.error('复制失败')
+    }
+  }
+
   return (
     <div className={styles.container}>
       <aside className={styles.sidebar}>
@@ -501,6 +570,15 @@ export default function ChatPage() {
             {activeSessionId && !isStreaming && messages.length > 0 ? (
               <button
                 className="btn btn-ghost btn-sm"
+                onClick={handleExportSessionAsNote}
+                title="将当前对话导出为一篇 Markdown 笔记"
+              >
+                📝 导出为笔记
+              </button>
+            ) : null}
+            {activeSessionId && !isStreaming && messages.length > 0 ? (
+              <button
+                className="btn btn-ghost btn-sm"
                 onClick={handleClearContext}
                 title="清空当前对话的上下文与历史"
               >
@@ -611,6 +689,24 @@ export default function ChatPage() {
                       ) : null}
                     </>
                   )}
+                  {msg.content && !msg.streaming ? (
+                    <div className={styles.msgActions}>
+                      <button
+                        className={styles.msgAction}
+                        title="将此消息保存为笔记"
+                        onClick={() => handleSaveMessageAsNote(msg)}
+                      >
+                        📝 存为笔记
+                      </button>
+                      <button
+                        className={styles.msgAction}
+                        title="复制内容"
+                        onClick={() => handleCopyText(msg.content)}
+                      >
+                        复制
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ))

@@ -1,0 +1,108 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  flex-wrap: wrap;
+}
+
+.toolbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.toolBtn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.toolBtn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.toolBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolBtnActive {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.panes.mode_split .textarea {
+  border-right: 1px solid var(--color-border);
+}
+
+.panes.mode_edit .textarea,
+.panes.mode_preview .preview {
+  width: 100%;
+}
+
+.textarea {
+  flex: 1;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  outline: none;
+  resize: vertical;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.preview {
+  flex: 1;
+  width: 100%;
+  padding: 14px 18px;
+  overflow-y: auto;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.previewEmpty {
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}

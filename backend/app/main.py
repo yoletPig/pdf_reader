@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     settings.PAPERS_DIR.mkdir(parents=True, exist_ok=True)
     settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    settings.NOTES_DIR.mkdir(parents=True, exist_ok=True)
     await init_db()
     await load_llm_from_settings()
     # 注入服务依赖
@@ -69,7 +70,7 @@ async def health_check():
 
 
 # 注册当前仍保留的 API 路由
-from app.api import papers, search, translation, config, prompts, agent_proxy, chat, folders
+from app.api import papers, search, translation, config, prompts, agent_proxy, chat, folders, todos, notes
 
 app.include_router(papers.router)
 app.include_router(search.router)
@@ -79,3 +80,5 @@ app.include_router(prompts.router)
 app.include_router(agent_proxy.router)
 app.include_router(chat.router)
 app.include_router(folders.router)
+app.include_router(todos.router)
+app.include_router(notes.router)

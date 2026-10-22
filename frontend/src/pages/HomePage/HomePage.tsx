@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { papersApi, type Paper } from '../../api/papers'
 import { foldersApi, type FolderItem, type TagCount } from '../../api/folders'
+import { todosApi } from '../../api/todos'
 import { ConfirmDialog, Modal, ThemeToggle, useToast } from '../../components/ui/kit'
 import styles from './HomePage.module.css'
 
@@ -48,6 +49,7 @@ export default function HomePage() {
   const [tags, setTags] = useState<TagCount[]>([])
   const [activeTag, setActiveTag] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  const [pendingTodos, setPendingTodos] = useState(0)
 
   // 弹窗状态
   const [folderModal, setFolderModal] = useState<{ open: boolean; editing?: FolderItem }>({ open: false })
@@ -62,13 +64,18 @@ export default function HomePage() {
   /* ---------- 数据加载 ---------- */
 
   const fetchMeta = useCallback(async () => {
-    const [foldersRes, tagsRes] = await Promise.all([foldersApi.list(), foldersApi.allTags()])
+    const [foldersRes, tagsRes, todosRes] = await Promise.all([
+      foldersApi.list(),
+      foldersApi.allTags(),
+      todosApi.list({ status: 'pending' }).catch(() => null),
+    ])
     setFolders(foldersRes.data.folders || [])
     setFolderCounts({
       uncategorized: foldersRes.data.uncategorized_count || 0,
       total: foldersRes.data.total_count || 0,
     })
     setTags(tagsRes.data.tags || [])
+    setPendingTodos(todosRes?.data.pending_count || 0)
   }, [])
 
   const fetchPapers = useCallback(async () => {
@@ -242,6 +249,15 @@ export default function HomePage() {
           <button className={styles.navItem} onClick={() => navigate('/chat')}>
             <span className={styles.navIcon}>✦</span>
             <span className={styles.navLabel}>AI 对话</span>
+          </button>
+          <button className={styles.navItem} onClick={() => navigate('/notes')}>
+            <span className={styles.navIcon}>📝</span>
+            <span className={styles.navLabel}>笔记</span>
+          </button>
+          <button className={styles.navItem} onClick={() => navigate('/todos')}>
+            <span className={styles.navIcon}>✅</span>
+            <span className={styles.navLabel}>待办</span>
+            {pendingTodos > 0 && <span className={styles.navCount}>{pendingTodos}</span>}
           </button>
           <button className={styles.navItem} onClick={() => navigate('/settings')}>
             <span className={styles.navIcon}>⚙️</span>

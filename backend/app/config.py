@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = Path(__file__).parent.parent / "data"
     PAPERS_DIR: Path = DATA_DIR / "papers"
     CACHE_DIR: Path = DATA_DIR / "cache"
+    NOTES_DIR: Path = DATA_DIR / "notes"
 
     # PDF 解析引擎：pymupdf（快速文本提取）/ docling（深度结构解析）
     # 运行时可在系统设置页覆盖（存于 app_settings 表）
