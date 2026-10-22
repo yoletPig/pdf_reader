@@ -34,13 +34,22 @@ def _client() -> httpx.AsyncClient:
 
 # ---------- 序列化 ----------
 
+def _iso(dt: datetime | None) -> str:
+    """序列化为带时区的 ISO 时间。
+    DB 中存的是 naive UTC（datetime.utcnow），补 Z 避免前端按本地时区误解析
+    （否则刚创建的会话会显示"8 小时前"）。"""
+    if not dt:
+        return ""
+    return dt.isoformat() + ("Z" if dt.tzinfo is None else "")
+
+
 def _session_to_dict(session: ChatSession, last_message: str = "", message_count: int = 0) -> dict:
     return {
         "id": session.id,
         "title": session.title,
         "paper_id": session.paper_id or "",
-        "created_at": session.created_at.isoformat() if session.created_at else "",
-        "updated_at": session.updated_at.isoformat() if session.updated_at else "",
+        "created_at": _iso(session.created_at),
+        "updated_at": _iso(session.updated_at),
         "last_message": last_message[:120],
         "message_count": message_count,
     }
@@ -53,7 +62,7 @@ def _message_to_dict(msg: ChatMessage) -> dict:
         "content": msg.content,
         "sources": json.loads(msg.sources_json or "[]"),
         "meta": json.loads(msg.meta_json or "{}"),
-        "created_at": msg.created_at.isoformat() if msg.created_at else "",
+        "created_at": _iso(msg.created_at),
     }
 
 
@@ -162,6 +171,25 @@ async def _next_sequence(db: AsyncSession, session_id: str) -> int:
     return (current or 0) + 1
 
 
+def _auto_title(question: str, limit: int = 30) -> str:
+    """由首条用户消息生成会话标题（压缩空白、截断）。"""
+    text = re.sub(r"\s+", " ", question).strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+async def _maybe_autotitle(db: AsyncSession, session: ChatSession, question: str) -> bool:
+    """新会话（标题为空或默认"新对话"）用首条消息自动命名；已手动命名的不覆盖。"""
+    if (session.title or "").strip() not in ("", "新对话"):
+        return False
+    title = _auto_title(question)
+    if not title:
+        return False
+    session.title = title
+    session.updated_at = datetime.utcnow()
+    await db.commit()
+    return True
+
+
 async def _persist_message(
     db: AsyncSession,
     session_id: str,
@@ -247,6 +275,8 @@ async def send_message_stream(session_id: str, data: SendMessageRequest, request
     async with async_session_factory() as db:
         session = await _load_session_or_404(db, session_id)
         paper_id = data.paper_id.strip() or (session.paper_id or "")
+        # 新会话首条消息自动命名标题
+        await _maybe_autotitle(db, session, question)
         history = await _build_history(db, session_id)
         await _persist_message(db, session_id, role="user", content=question)
 
@@ -345,6 +375,8 @@ async def add_message(session_id: str, data: SendMessageRequest, db: AsyncSessio
         raise HTTPException(status_code=400, detail="问题不能为空")
     session = await _load_session_or_404(db, session_id)
     paper_id = data.paper_id.strip() or (session.paper_id or "")
+    # 新会话首条消息自动命名标题
+    await _maybe_autotitle(db, session, question)
     history = await _build_history(db, session_id)
     await _persist_message(db, session_id, role="user", content=question)
 

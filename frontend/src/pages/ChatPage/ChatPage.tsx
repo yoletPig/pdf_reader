@@ -65,6 +65,13 @@ function timeAgo(iso: string) {
   return days < 30 ? `${days} 天前` : new Date(iso).toLocaleDateString()
 }
 
+/** 由首条消息生成会话标题（与后端 _auto_title 规则一致） */
+function deriveTitle(question: string, limit = 30) {
+  const text = question.replace(/\s+/g, ' ').trim()
+  if (!text) return '新对话'
+  return text.length > limit ? `${text.slice(0, limit)}…` : text
+}
+
 export default function ChatPage() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -257,7 +264,7 @@ export default function ChatPage() {
     if (!sessionId) {
       try {
         const res = await chatApi.createSession({
-          title: question.slice(0, 24) + (question.length > 24 ? '…' : ''),
+          title: deriveTitle(question),
           paper_id: scopePaperId,
         })
         sessionId = res.data.id
@@ -266,6 +273,13 @@ export default function ChatPage() {
       } catch {
         toast.error('创建对话失败')
         return
+      }
+    } else {
+      // 标题仍为默认占位（新对话）时，首条消息立即更新标题（后端持久化时同样会写入）
+      const current = sessions.find((s) => s.id === sessionId)
+      if (current && (!current.title || current.title === '新对话')) {
+        const title = deriveTitle(question)
+        setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title } : s)))
       }
     }
 
