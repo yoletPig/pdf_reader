@@ -16,6 +16,7 @@ import { notesApi } from '../../api/notes'
 import { useChatStore, type ChatMessage } from '../../stores/chat-store'
 import { Markdown } from '../../components/ui/Markdown'
 import { ConfirmDialog, useToast } from '../../components/ui/kit'
+import { InboxBell } from '../../components/ui/InboxBell'
 import styles from './ChatPage.module.css'
 
 const SUGGESTIONS = [
@@ -556,6 +557,7 @@ export default function ChatPage() {
             ) : null}
           </div>
           <div className={styles.headerActions}>
+            <InboxBell />
             <select
               className={`select ${styles.scopeSelect}`}
               value={scopePaperId}

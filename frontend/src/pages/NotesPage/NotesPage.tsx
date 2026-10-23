@@ -4,6 +4,7 @@ import { notesApi, type NoteDetail, type NoteSummary } from '../../api/notes'
 import { MarkdownEditor } from '../../components/notes/MarkdownEditor'
 import { NOTE_TEMPLATES, renderTemplate, type NoteTemplate } from '../../components/notes/templates'
 import { ConfirmDialog, Modal, useToast } from '../../components/ui/kit'
+import { InboxBell } from '../../components/ui/InboxBell'
 import styles from './NotesPage.module.css'
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
@@ -206,6 +207,7 @@ export default function NotesPage() {
           <button className={`btn btn-primary ${styles.newBtn}`} onClick={() => setTemplateOpen(true)}>
             ＋ 新建笔记
           </button>
+          <InboxBell />
         </div>
 
         <input

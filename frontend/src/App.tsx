@@ -5,6 +5,7 @@ import { ToastProvider } from './components/ui/kit'
 import './styles/theme.css'
 import './styles/globals.css'
 
+const DashboardPage = lazy(() => import('./pages/DashboardPage/DashboardPage'))
 const HomePage = lazy(() => import('./pages/HomePage/HomePage'))
 const SearchPage = lazy(() => import('./pages/SearchPage/SearchPage'))
 const ReaderPage = lazy(() => import('./pages/ReaderPage/ReaderPage'))
@@ -36,7 +37,8 @@ function App() {
           }
         >
           <Routes>
-            <Route path="/" element={<HomePage />} />
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/library" element={<HomePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/reader/:id" element={<ReaderPage />} />
             <Route path="/chat" element={<ChatPage />} />

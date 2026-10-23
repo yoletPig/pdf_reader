@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { papersApi, type Paper } from '../../api/papers'
 import { foldersApi, type FolderItem, type TagCount } from '../../api/folders'
 import { todosApi } from '../../api/todos'
+import { InboxBell } from '../../components/ui/InboxBell'
+import {
+  IconLibrary,
+  IconUngrouped,
+  IconChat,
+  IconNotes,
+  IconTodo,
+} from '../../components/icons/NavIcons'
 import { ConfirmDialog, Modal, ThemeToggle, useToast } from '../../components/ui/kit'
 import styles from './HomePage.module.css'
 
@@ -34,6 +42,7 @@ function parseAuthors(raw: string): string {
 
 export default function HomePage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const toast = useToast()
 
   const [papers, setPapers] = useState<Paper[]>([])
@@ -60,6 +69,15 @@ export default function HomePage() {
   const [deleteTarget, setDeleteTarget] = useState<Paper | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // 支持 /library?f=xxx&t=xxx 直达指定文件夹/标签（首页侧栏跳转）
+  useEffect(() => {
+    const f = searchParams.get('f')
+    const t = searchParams.get('t')
+    if (f) setNavKey(f)
+    if (t) setActiveTag(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* ---------- 数据加载 ---------- */
 
@@ -230,11 +248,15 @@ export default function HomePage() {
         </div>
 
         <nav className={styles.navSection}>
+          <button className={styles.navItem} onClick={() => navigate('/')}>
+            <span className={styles.navIcon}>🏠</span>
+            <span className={styles.navLabel}>首页</span>
+          </button>
           <button
             className={`${styles.navItem} ${navKey === 'all' ? styles.navActive : ''}`}
             onClick={() => setNavKey('all')}
           >
-            <span className={styles.navIcon}>🗂</span>
+            <span className={styles.navIcon}><IconLibrary size={17} /></span>
             <span className={styles.navLabel}>全部论文</span>
             <span className={styles.navCount}>{folderCounts.total}</span>
           </button>
@@ -242,20 +264,20 @@ export default function HomePage() {
             className={`${styles.navItem} ${navKey === 'uncategorized' ? styles.navActive : ''}`}
             onClick={() => setNavKey('uncategorized')}
           >
-            <span className={styles.navIcon}>📄</span>
+            <span className={styles.navIcon}><IconUngrouped size={17} /></span>
             <span className={styles.navLabel}>未分组</span>
             <span className={styles.navCount}>{folderCounts.uncategorized}</span>
           </button>
           <button className={styles.navItem} onClick={() => navigate('/chat')}>
-            <span className={styles.navIcon}>✦</span>
+            <span className={styles.navIcon}><IconChat size={17} /></span>
             <span className={styles.navLabel}>AI 对话</span>
           </button>
           <button className={styles.navItem} onClick={() => navigate('/notes')}>
-            <span className={styles.navIcon}>📝</span>
+            <span className={styles.navIcon}><IconNotes size={17} /></span>
             <span className={styles.navLabel}>笔记</span>
           </button>
           <button className={styles.navItem} onClick={() => navigate('/todos')}>
-            <span className={styles.navIcon}>✅</span>
+            <span className={styles.navIcon}><IconTodo size={17} /></span>
             <span className={styles.navLabel}>待办</span>
             {pendingTodos > 0 && <span className={styles.navCount}>{pendingTodos}</span>}
           </button>
@@ -359,6 +381,7 @@ export default function HomePage() {
             <option value="year">按年份</option>
             <option value="progress">按阅读进度</option>
           </select>
+          <InboxBell />
           <ThemeToggle />
           <button
             className="btn btn-primary"

@@ -527,7 +527,7 @@ export default function ReaderPage() {
     <div className={styles.container}>
       {/* ======== 顶栏 ======== */}
       <header className={styles.topbar}>
-        <button className="btn btn-icon" title="返回" onClick={() => navigate('/')}>←</button>
+        <button className="btn btn-icon" title="返回论文库" onClick={() => navigate('/library')}>←</button>
         <div className={styles.paperTitle} title={paper?.title}>
           {paper?.title || '加载中…'}
         </div>

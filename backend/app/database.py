@@ -72,6 +72,15 @@ def _apply_lightweight_migrations(sync_conn):
             if column not in agent_run_columns:
                 sync_conn.execute(text(sql))
 
+    if "todos" in tables:
+        todo_columns = {column["name"] for column in inspector.get_columns("todos")}
+        migrations = {
+            "list_id": "ALTER TABLE todos ADD COLUMN list_id VARCHAR(36) DEFAULT ''",
+        }
+        for column, sql in migrations.items():
+            if column not in todo_columns:
+                sync_conn.execute(text(sql))
+
     if "translation_cache" in tables:
         translation_columns = {column["name"] for column in inspector.get_columns("translation_cache")}
         migrations = {

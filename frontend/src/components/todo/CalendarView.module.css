@@ -1,0 +1,219 @@
+.calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.navBtn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.navBtn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.monthLabel {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text);
+  min-width: 120px;
+  text-align: center;
+}
+
+.todayBtn {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.todayBtn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.weekRow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.weekCell {
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  padding: 4px 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.dayCell {
+  min-height: 86px;
+  padding: 5px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dayCell:hover {
+  border-color: var(--color-primary);
+}
+
+.dayOut {
+  opacity: 0.45;
+}
+
+.dayToday {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.daySelected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-light);
+}
+
+.dayHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dayNum {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.dayToday .dayNum {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.dayBadge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  line-height: 16px;
+}
+
+.dayBadgePending {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+
+.dayBadgeDone {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.dayChips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.dayChip {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dayChipDone {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.dayMore {
+  font-size: 9.5px;
+  color: var(--color-text-tertiary);
+}
+
+/* ---------- 选中日面板 ---------- */
+
+.dayPanel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dayPanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dayPanelTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.dayPanelCount {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.quickAdd {
+  display: flex;
+  gap: 8px;
+}
+
+.quickInput {
+  flex: 1;
+}
+
+.dayList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dayEmpty {
+  padding: 14px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+  font-size: 12.5px;
+}
