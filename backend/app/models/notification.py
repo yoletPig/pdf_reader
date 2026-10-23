@@ -18,5 +18,6 @@ class Notification(Base):
     link: Mapped[str] = mapped_column(String(500), default="")  # 前端跳转路由
     dedupe_key: Mapped[str] = mapped_column(String(100), default="", index=True)  # 去重键（幂等生成）
     read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # 已清空/删除（保留行防止重复生成）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

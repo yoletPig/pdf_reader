@@ -12,6 +12,7 @@ import {
   IconTodo,
 } from '../../components/icons/NavIcons'
 import { ConfirmDialog, Modal, ThemeToggle, useToast } from '../../components/ui/kit'
+import { useSidebarCollapsed } from '../../utils/sidebar'
 import styles from './HomePage.module.css'
 
 type NavKey = 'all' | 'uncategorized' | string // string = folder id
@@ -44,6 +45,7 @@ export default function HomePage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const toast = useToast()
+  const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useSidebarCollapsed()
 
   const [papers, setPapers] = useState<Paper[]>([])
   const [total, setTotal] = useState(0)
@@ -241,19 +243,29 @@ export default function HomePage() {
       }}
     >
       {/* ======== 侧栏：文件夹 & 标签 ======== */}
-      <aside className={styles.sidebar}>
-        <div className={styles.brand} onClick={() => setNavKey('all')}>
+      <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`}>
+        <div className={styles.brand} onClick={() => setNavKey('all')} title="Papers">
           <span className={styles.brandIcon}>📜</span>
           <span className={styles.brandName}>Papers</span>
         </div>
 
+        <button
+          className={styles.collapseBtn}
+          title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+          onClick={toggleSidebar}
+        >
+          <span className={styles.collapseIcon}>{sidebarCollapsed ? '»' : '«'}</span>
+          {!sidebarCollapsed && <span>收起侧栏</span>}
+        </button>
+
         <nav className={styles.navSection}>
-          <button className={styles.navItem} onClick={() => navigate('/')}>
+          <button className={styles.navItem} title="首页" onClick={() => navigate('/')}>
             <span className={styles.navIcon}>🏠</span>
             <span className={styles.navLabel}>首页</span>
           </button>
           <button
             className={`${styles.navItem} ${navKey === 'all' ? styles.navActive : ''}`}
+            title="全部论文"
             onClick={() => setNavKey('all')}
           >
             <span className={styles.navIcon}><IconLibrary size={17} /></span>
@@ -262,26 +274,27 @@ export default function HomePage() {
           </button>
           <button
             className={`${styles.navItem} ${navKey === 'uncategorized' ? styles.navActive : ''}`}
+            title="未分组"
             onClick={() => setNavKey('uncategorized')}
           >
             <span className={styles.navIcon}><IconUngrouped size={17} /></span>
             <span className={styles.navLabel}>未分组</span>
             <span className={styles.navCount}>{folderCounts.uncategorized}</span>
           </button>
-          <button className={styles.navItem} onClick={() => navigate('/chat')}>
+          <button className={styles.navItem} title="AI 对话" onClick={() => navigate('/chat')}>
             <span className={styles.navIcon}><IconChat size={17} /></span>
             <span className={styles.navLabel}>AI 对话</span>
           </button>
-          <button className={styles.navItem} onClick={() => navigate('/notes')}>
+          <button className={styles.navItem} title="笔记" onClick={() => navigate('/notes')}>
             <span className={styles.navIcon}><IconNotes size={17} /></span>
             <span className={styles.navLabel}>笔记</span>
           </button>
-          <button className={styles.navItem} onClick={() => navigate('/todos')}>
+          <button className={styles.navItem} title="待办" onClick={() => navigate('/todos')}>
             <span className={styles.navIcon}><IconTodo size={17} /></span>
             <span className={styles.navLabel}>待办</span>
             {pendingTodos > 0 && <span className={styles.navCount}>{pendingTodos}</span>}
           </button>
-          <button className={styles.navItem} onClick={() => navigate('/settings')}>
+          <button className={styles.navItem} title="系统设置" onClick={() => navigate('/settings')}>
             <span className={styles.navIcon}>⚙️</span>
             <span className={styles.navLabel}>系统设置</span>
           </button>
@@ -381,8 +394,6 @@ export default function HomePage() {
             <option value="year">按年份</option>
             <option value="progress">按阅读进度</option>
           </select>
-          <InboxBell />
-          <ThemeToggle />
           <button
             className="btn btn-primary"
             onClick={() => fileInputRef.current?.click()}
@@ -397,6 +408,10 @@ export default function HomePage() {
             hidden
             onChange={handleFileInput}
           />
+          <div className={styles.topActions}>
+            <ThemeToggle />
+            <InboxBell />
+          </div>
         </header>
 
         <div className={styles.content}>

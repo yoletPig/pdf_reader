@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { dailyPapersApi, type DailyPaper, type DailyPaperSource } from '../../api/dailyPapers'
 import { Segmented, useToast } from '../ui/kit'
+import { DailyPapersLogo } from './DailyPapersLogo'
 import styles from './DailyPapers.module.css'
 
 type SourceFilter = 'all' | 'huggingface' | 'modelscope'
+type CodeFilter = 'all' | 'with' | 'without'
 
 const SOURCE_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -11,12 +13,19 @@ const SOURCE_OPTIONS = [
   { value: 'modelscope', label: '🟠 ModelScope' },
 ] as const
 
+const CODE_OPTIONS = [
+  { value: 'all', label: '全部' },
+  { value: 'with', label: '💻 含代码仓库' },
+  { value: 'without', label: '无代码仓库' },
+] as const
+
+const PAGE_SIZE_OPTIONS = [4, 8, 12]
+const DEFAULT_PAGE_SIZE = 4
+
 const SOURCE_LABELS: Record<DailyPaperSource, string> = {
   huggingface: 'HuggingFace',
   modelscope: 'ModelScope',
 }
-
-const PAGE_SIZE = 12
 
 function PaperCard({ paper }: { paper: DailyPaper }) {
   return (
@@ -70,6 +79,8 @@ function PaperCard({ paper }: { paper: DailyPaper }) {
 export function DailyPapers() {
   const toast = useToast()
   const [source, setSource] = useState<SourceFilter>('all')
+  const [codeFilter, setCodeFilter] = useState<CodeFilter>('all')
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [papers, setPapers] = useState<DailyPaper[]>([])
   const [dateLabel, setDateLabel] = useState('')
   const [loading, setLoading] = useState(true)
@@ -95,15 +106,24 @@ export function DailyPapers() {
     void fetchPapers()
   }, [fetchPapers])
 
-  const visible = source === 'all' ? papers : papers.filter((p) => p.source === source)
+  const visible = papers.filter(
+    (p) =>
+      (source === 'all' || p.source === source) &&
+      (codeFilter === 'all' || (codeFilter === 'with' ? !!p.code_url : !p.code_url)),
+  )
 
   // 分页（客户端）
-  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize))
   const current = Math.min(page, totalPages)
-  const paged = visible.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)
+  const paged = visible.slice((current - 1) * pageSize, current * pageSize)
 
   const changeSource = (next: SourceFilter) => {
     setSource(next)
+    setPage(1)
+  }
+
+  const changeCodeFilter = (next: CodeFilter) => {
+    setCodeFilter(next)
     setPage(1)
   }
 
@@ -111,11 +131,26 @@ export function DailyPapers() {
     <section className={styles.section}>
       <header className={styles.head}>
         <h2 className={styles.title}>
-          📚 每日论文
+          <DailyPapersLogo size={22} />
+          每日论文
           <span className={styles.subtitle}>HF Daily Papers · ModelScope 推荐 · {dateLabel}</span>
         </h2>
         <div className={styles.headActions}>
           <Segmented options={[...SOURCE_OPTIONS]} value={source} onChange={changeSource} size="sm" />
+          <Segmented options={[...CODE_OPTIONS]} value={codeFilter} onChange={changeCodeFilter} size="sm" />
+          <select
+            className={`select ${styles.pageSizeSelect}`}
+            value={pageSize}
+            title="每页显示篇数"
+            onChange={(e) => {
+              setPageSize(Number(e.target.value))
+              setPage(1)
+            }}
+          >
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>每页 {n} 篇</option>
+            ))}
+          </select>
           <button
             className={`btn btn-ghost btn-sm ${refreshing ? styles.refreshing : ''}`}
             onClick={() => fetchPapers(true)}

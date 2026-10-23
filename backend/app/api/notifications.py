@@ -100,10 +100,18 @@ async def list_notifications(limit: int = 30, db: AsyncSession = Depends(get_db)
     """收件箱消息列表（先幂等补生成提醒消息）。"""
     await collect_notifications(db)
     rows = (
-        await db.execute(select(Notification).order_by(Notification.created_at.desc()).limit(min(limit, 100)))
+        await db.execute(
+            select(Notification)
+            .where(Notification.dismissed == False)  # noqa: E712
+            .order_by(Notification.created_at.desc())
+            .limit(min(limit, 100))
+        )
     ).scalars().all()
     unread = (await db.execute(
-        select(Notification).where(Notification.read == False)  # noqa: E712
+        select(Notification).where(
+            Notification.read == False,  # noqa: E712
+            Notification.dismissed == False,  # noqa: E712
+        )
     )).scalars().all()
     return {
         "notifications": [_to_dict(n) for n in rows],
@@ -130,7 +138,12 @@ async def mark_read(notification_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/read-all")
 async def mark_all_read(db: AsyncSession = Depends(get_db)):
     """一键全读。"""
-    rows = (await db.execute(select(Notification).where(Notification.read == False))).scalars().all()  # noqa: E712
+    rows = (await db.execute(
+        select(Notification).where(
+            Notification.read == False,  # noqa: E712
+            Notification.dismissed == False,  # noqa: E712
+        )
+    )).scalars().all()
     now = datetime.utcnow()
     for note in rows:
         note.read = True
@@ -141,20 +154,32 @@ async def mark_all_read(db: AsyncSession = Depends(get_db)):
 
 @router.delete("/{notification_id}")
 async def delete_notification(notification_id: str, db: AsyncSession = Depends(get_db)):
+    """删除单条消息（带 dedupe_key 的标记 dismissed 防止重新生成，无 dedupe_key 的直接删除）。"""
     note = (await db.execute(
         select(Notification).where(Notification.id == notification_id)
     )).scalar_one_or_none()
     if note:
-        await db.delete(note)
+        if note.dedupe_key:
+            note.dismissed = True
+        else:
+            await db.delete(note)
         await db.commit()
     return {"status": "ok", "deleted": notification_id}
 
 
 @router.delete("")
 async def clear_read_notifications(db: AsyncSession = Depends(get_db)):
-    """清空已读消息。"""
-    rows = (await db.execute(select(Notification).where(Notification.read == True))).scalars().all()  # noqa: E712
+    """清空已读消息（标记 dismissed，防止 collect_notifications 重复生成）。"""
+    rows = (await db.execute(
+        select(Notification).where(
+            Notification.read == True,  # noqa: E712
+            Notification.dismissed == False,  # noqa: E712
+        )
+    )).scalars().all()
     for note in rows:
-        await db.delete(note)
+        if note.dedupe_key:
+            note.dismissed = True
+        else:
+            await db.delete(note)
     await db.commit()
     return {"status": "ok", "cleared": len(rows)}

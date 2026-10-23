@@ -12,6 +12,7 @@ import {
   IconNotes,
   IconTodo,
 } from '../../components/icons/NavIcons'
+import { useSidebarCollapsed } from '../../utils/sidebar'
 import styles from './DashboardPage.module.css'
 
 const NAV_ITEMS = [
@@ -52,6 +53,7 @@ function dateLabel() {
 export default function DashboardPage() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { collapsed: sidebarCollapsed, toggle: toggleSidebar } = useSidebarCollapsed()
   const [folders, setFolders] = useState<FolderItem[]>([])
   const [tags, setTags] = useState<TagCount[]>([])
 
@@ -77,19 +79,33 @@ export default function DashboardPage() {
   return (
     <div className={styles.container}>
       {/* ======== 侧边栏 ======== */}
-      <aside className={styles.sidebar}>
-        <div className={styles.brand} onClick={() => navigate('/library')}>
+      <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`}>
+        <div className={styles.brand} onClick={() => navigate('/library')} title="Papers">
           <span className={styles.brandIcon}>📜</span>
           <span className={styles.brandName}>Papers</span>
         </div>
 
+        <button
+          className={styles.collapseBtn}
+          title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+          onClick={toggleSidebar}
+        >
+          <span className={styles.collapseIcon}>{sidebarCollapsed ? '»' : '«'}</span>
+          {!sidebarCollapsed && <span>收起侧栏</span>}
+        </button>
+
         <nav className={styles.navSection}>
-          <button className={`${styles.navItem} ${styles.navActive}`}>
+          <button className={`${styles.navItem} ${styles.navActive}`} title="首页">
             <span className={styles.navIcon}>🏠</span>
             <span className={styles.navLabel}>首页</span>
           </button>
           {NAV_ITEMS.map((item) => (
-            <button key={item.to + item.label} className={styles.navItem} onClick={() => navigate(item.to)}>
+            <button
+              key={item.to + item.label}
+              className={styles.navItem}
+              title={item.label}
+              onClick={() => navigate(item.to)}
+            >
               <span className={styles.navIcon}>{item.icon}</span>
               <span className={styles.navLabel}>{item.label}</span>
             </button>
@@ -145,8 +161,8 @@ export default function DashboardPage() {
             <span className={styles.dateText}>{dateLabel()} · 今天也要高效阅读呀</span>
           </div>
           <div className={styles.topActions}>
-            <InboxBell />
             <ThemeToggle />
+            <InboxBell />
           </div>
         </header>
 

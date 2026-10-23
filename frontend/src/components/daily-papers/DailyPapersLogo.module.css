@@ -1,0 +1,8 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-accent-gradient);
+  flex-shrink: 0;
+  box-shadow: var(--shadow-xs);
+}

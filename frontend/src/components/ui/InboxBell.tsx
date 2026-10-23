@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { notificationsApi, type NotificationItem } from '../../api/notifications'
+import { IconInboxTray, MsgTypeIcon } from '../icons/InboxIcons'
 import styles from './InboxBell.module.css'
-
-const TYPE_ICONS: Record<string, string> = {
-  todo: '✅',
-  papers: '📚',
-  system: '🔔',
-}
 
 function timeAgo(iso: string) {
   if (!iso) return ''
@@ -93,7 +88,7 @@ export function InboxBell() {
   return (
     <div className={styles.wrap} onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
       <button className={styles.bell} title="收件箱" onClick={() => setOpen((o) => !o)}>
-        <span className={styles.bellIcon}>🔔</span>
+        <span className={styles.bellIcon}><IconInboxTray size={17} /></span>
         {unread > 0 && <span className={styles.badge}>{unread > 99 ? '99+' : unread}</span>}
       </button>
 
@@ -122,7 +117,7 @@ export function InboxBell() {
                   className={`${styles.item} ${item.read ? styles.itemRead : styles.itemUnread}`}
                   onClick={() => handleClickItem(item)}
                 >
-                  <span className={styles.itemIcon}>{TYPE_ICONS[item.type] || '🔔'}</span>
+                  <MsgTypeIcon type={item.type} size={26} />
                   <div className={styles.itemBody}>
                     <div className={styles.itemTitle}>
                       {!item.read && <span className={styles.dot} />}
@@ -135,6 +130,16 @@ export function InboxBell() {
               ))
             )}
           </div>
+
+          <button
+            className={styles.popFoot}
+            onClick={() => {
+              setOpen(false)
+              navigate('/todos?list=inbox')
+            }}
+          >
+            进入消息中心 →
+          </button>
         </div>
       )}
     </div>

@@ -79,6 +79,11 @@
   font-size: 13px;
 }
 
+/* 首页今日待办：时间向右对齐 */
+.compact .dueChip {
+  margin-left: auto;
+}
+
 .todoDesc {
   margin-top: 3px;
   font-size: 12.5px;

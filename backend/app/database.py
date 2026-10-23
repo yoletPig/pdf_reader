@@ -81,6 +81,15 @@ def _apply_lightweight_migrations(sync_conn):
             if column not in todo_columns:
                 sync_conn.execute(text(sql))
 
+    if "notifications" in tables:
+        notification_columns = {column["name"] for column in inspector.get_columns("notifications")}
+        migrations = {
+            "dismissed": "ALTER TABLE notifications ADD COLUMN dismissed BOOLEAN DEFAULT 0",
+        }
+        for column, sql in migrations.items():
+            if column not in notification_columns:
+                sync_conn.execute(text(sql))
+
     if "translation_cache" in tables:
         translation_columns = {column["name"] for column in inspector.get_columns("translation_cache")}
         migrations = {

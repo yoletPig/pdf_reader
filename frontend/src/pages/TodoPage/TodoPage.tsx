@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { todosApi, type TodoItem, type TodoListInfo, type TodoPriority } from '../../api/todos'
+import { notificationsApi } from '../../api/notifications'
 import { TodoRow, todayStr } from '../../components/todo/TodoRow'
 import { TodoLogo } from '../../components/todo/TodoLogo'
 import { CalendarView } from '../../components/todo/CalendarView'
+import { InboxCenter } from '../../components/inbox/InboxCenter'
+import { IconInboxTray } from '../../components/icons/InboxIcons'
 import { ConfirmDialog, Modal, Segmented, useToast } from '../../components/ui/kit'
 import { InboxBell } from '../../components/ui/InboxBell'
 import styles from './TodoPage.module.css'
@@ -39,11 +42,12 @@ interface Bucket {
 
 export default function TodoPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const toast = useToast()
 
   const [todos, setTodos] = useState<TodoItem[]>([])
   const [lists, setLists] = useState<TodoListInfo[]>([])
-  const [inboxCounts, setInboxCounts] = useState({ pending_count: 0, done_count: 0 })
+  const [inboxUnread, setInboxUnread] = useState(0)
   const [listFilter, setListFilter] = useState<ListFilter>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -73,7 +77,16 @@ export default function TodoPage() {
     try {
       const res = await todosApi.listLists()
       setLists(res.data.lists)
-      setInboxCounts(res.data.inbox)
+    } catch {
+      /* 静默 */
+    }
+  }, [])
+
+  /** 收件箱未读消息数（收件箱=消息中心） */
+  const fetchInboxUnread = useCallback(async () => {
+    try {
+      const res = await notificationsApi.list({ limit: 1 })
+      setInboxUnread(res.data.unread_count)
     } catch {
       /* 静默 */
     }
@@ -96,9 +109,18 @@ export default function TodoPage() {
 
   useEffect(() => {
     void fetchLists()
-  }, [fetchLists])
+    void fetchInboxUnread()
+  }, [fetchLists, fetchInboxUnread])
+
+  // 支持 /todos?list=inbox 直达消息中心（收件箱）
+  useEffect(() => {
+    const list = searchParams.get('list')
+    if (list) setListFilter(list)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
+    if (listFilter === 'inbox') return // 收件箱=消息中心，不拉取待办
     const timer = setTimeout(() => fetchTodos(), query ? 250 : 0)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -304,11 +326,12 @@ export default function TodoPage() {
           <button
             className={`${styles.listItem} ${listFilter === 'inbox' ? styles.listActive : ''}`}
             onClick={() => setListFilter('inbox')}
+            title="收件箱 · 消息中心（站内信 / 邮件）"
           >
-            <span className={styles.listIcon}>📥</span>
+            <span className={styles.listIcon}><IconInboxTray size={15} /></span>
             <span className={styles.listName}>收件箱</span>
-            {inboxCounts.pending_count > 0 && (
-              <span className={styles.listCount}>{inboxCounts.pending_count}</span>
+            {inboxUnread > 0 && (
+              <span className={styles.listCount}>{inboxUnread}</span>
             )}
           </button>
 
@@ -354,12 +377,20 @@ export default function TodoPage() {
         <main className={styles.main}>
           <div className={styles.mainHead}>
             <h2 className={styles.mainTitle}>
-              {listTitle}
-              <span className={styles.mainCount}>{todos.length}</span>
+              {listFilter === 'inbox' ? '收件箱 · 消息中心' : listTitle}
+              <span className={styles.mainCount}>
+                {listFilter === 'inbox' ? `${inboxUnread} 条未读` : todos.length}
+              </span>
             </h2>
-            <Segmented options={[...VIEW_OPTIONS]} value={viewMode} onChange={setViewMode} size="sm" />
+            {listFilter !== 'inbox' && (
+              <Segmented options={[...VIEW_OPTIONS]} value={viewMode} onChange={setViewMode} size="sm" />
+            )}
           </div>
 
+          {listFilter === 'inbox' ? (
+            <InboxCenter onUnreadChange={setInboxUnread} />
+          ) : (
+          <>
           {/* 快速添加 */}
           <div className={styles.addBar}>
             <input
@@ -469,6 +500,8 @@ export default function TodoPage() {
               onDelete={setDeleteTarget}
               onQuickAdd={(t, date) => handleAdd(t, date)}
             />
+          )}
+          </>
           )}
         </main>
       </div>
